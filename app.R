@@ -2091,14 +2091,37 @@ server <- function(input, output, session) {
         }
       }
       
+      # Coerce degree lists to numeric and align lengths
+      d1deg_new <- num(unlist(dist1_deg_new))
+      d2deg_new <- num(unlist(dist2_deg_new))
       
-      #CORRECT & ERRORS
-      if (length(dist1_deg_new) >= num_value_num()) {
-        if (!is.na(unlist(ans2[[num_value_num()]][1])) || !is.na(unlist(dist1_deg_new[[num_value_num()]][1]))) { #Verify if the direction task is played or not
-          core <- cbind(Name = data2[[i]]$players[1], Correct = unlist(ans2[[num_value_num()]][1]), Answer = paste(round(unlist(dist1_deg_new[[num_value_num()]][1]),3),"°"), Error = paste(round(unlist(abs(unlist(dist2_deg_new)-unlist(dist1_deg_new))[[num_value_num()]][1]),3),"°"))
+      maxn <- max(length(d1deg_new), length(d2deg_new))
+      length(d1deg_new) <- maxn
+      length(d2deg_new) <- maxn
+
+      deg_error <- abs(d2deg_new - d1deg_new)
+      
+      
+     
+      # CORRECT & ERRORS
+      if (length(d1deg_new) >= num_value_num()) {
+        idx <- num_value_num()
+        
+        if (!is.na(ans2[[idx]][1]) || !is.na(d1deg_new[idx])) {
+          err_val   <- deg_error[idx]
+          answer_deg <- d1deg_new[idx]
+          
+          core <- cbind(
+            Name   = data2[[i]]$players[1],
+            Correct= ans2[[idx]][1],
+            Answer = paste(round(answer_deg, 3), "°"),
+            Error  = paste(round(err_val,      3), "°")
+          )
+          
           cores <- rbind(cores, core)
         }
       }
+      
       
       #Computing correct or incorrect tries
       if (length(ans2) >= num_value_num()) { #outside index
@@ -2437,42 +2460,41 @@ server <- function(input, output, session) {
     #print(cbind(data[[1]]$events$task$type, data[[1]]$events$correct,data[[1]]$events$answer$correct))
     #print(ans)
     
-    #Distance to the correct answer
-    dist1_m <- list()  #dist in m
-    dist1_deg <- list()  #dist in degrees - by the player, we can compare both
-    dist2_deg <-list()   #dist in degree - right answer
+    # Distance to the correct answer
+    dist1_m   <- list()   # meters
+    dist1_deg <- list()   # player's bearing (deg)
+    dist2_deg <- list()   # correct bearing (deg)
+    
     for (j in 1:(length(id) - 1)) {
       if ((!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
+        # distance in meters (as is)
         dist1_m <- append(dist1_m, data[[1]]$events$answer$distance[j])
-        if (length(data[[1]]$events$task$question$direction$bearing) != 0) { #Two different ways in the JSON for theme-direction
-          if (length(data[[1]]$events$answer$clickDirection) != 0 && !is.na(data[[1]]$events$answer$clickDirection[j])) {
-            dist1_deg <- append(dist1_deg, data[[1]]$events$answer$clickDirection[j]) #with the little arrow on the map
-            dist2_deg <- append(dist2_deg, data[[1]]$events$compassHeading[j])
-          }
-          else {
-            if (length(data[[1]]$events$answer$compassHeading) != 0) {
-              dist1_deg <- append(dist1_deg, data[[1]]$events$answer$compassHeading[j]) #with orientation with tablet
-            }
-            else {
-              dist1_deg <- append(dist1_deg, NA)
-            }
-            
-            dist2_deg <- append(dist2_deg, data[[1]]$events$task$question$direction$bearing[j])
-          }
-        }
-        else {
-          dist1_deg <- append(dist1_deg, NA)
-          dist2_deg <- append(dist2_deg, NA)
-        }
+        
+        # NEW: 
+        ans_bearing <- get_answer_bearing(j, data[[1]]$events)
+        cor_bearing <- get_correct_bearing(j, data[[1]]$events)
+        
+        dist1_deg <- append(dist1_deg, ans_bearing)
+        dist2_deg <- append(dist2_deg, cor_bearing)
       }
     }
-    # print("error printed")
-    # print(input$num_value)
     
+   
+    num <- function(x) suppressWarnings(as.numeric(x))
     
+    d1m   <- num(unlist(dist1_m))
+    d1deg <- num(unlist(dist1_deg))
+    d2deg <- num(unlist(dist2_deg))
     
-    rds <- cbind(unlist(dist1_m),dist_deg = abs(unlist(dist2_deg)-unlist(dist1_deg)))
+    maxn <- max(length(d1m), length(d1deg), length(d2deg))
+    length(d1m)   <- maxn
+    length(d1deg) <- maxn
+    length(d2deg) <- maxn
+    
+    rds <- cbind(d1m, dist_deg = abs(d2deg - d1deg))
     #print(rds)
+    
+    
     
     ####sometimes we don't need to merge the column
     if (ncol(rds) == 2) {
