@@ -457,7 +457,7 @@ server <- function(input, output, session) {
   }
   #####---------TYPE CONVERSION HELPER FUNCTIONS FOR VR HELEN'S Tasks - end--------######
   
-  
+  map_rv <- reactiveVal(NULL)
   
   
   # Store selected game track data reactively
@@ -1541,9 +1541,10 @@ server <- function(input, output, session) {
     print(init_task_indices)
     
     if (is.null(data[[1]]$events$task$virEnvType[init_task_indices[num_value_num()]])) {
-      # 1. To render realworld map
-      output$map <- renderLeaflet(map_shown)
+      # 1. Real-world map: just use map_shown as built above
+      map_rv(map_shown)
     } else {
+      
       # 2. To render virtual environment map
       # Extract virEnvName and floor if 3d building for those events 
       virEnvLayers <- character(0)      # for virtual environment layers / images names
@@ -1571,8 +1572,8 @@ server <- function(input, output, session) {
         file.path(getwd(), "www", "virEnvsProperties.json")
       )
       
-      # render virtual environment map
-      output$map <- renderLeaflet({
+      # Build virtual environment map once
+      map_virtual <- {
         # Default empty map
         map_shown <- leaflet() %>%
           addTiles() %>%
@@ -1753,6 +1754,14 @@ server <- function(input, output, session) {
                            virEnvLayer = virEnvLayers[num_value_num()],
                            virEnvsProperties = virEnvsProperties)
           )
+      }
+      
+      # Store in reactive value
+      map_rv(map_virtual)
+      
+      output$map <- renderLeaflet({
+        req(map_rv())
+        map_rv()
       })
       
       # Convert abbreviation for type task
@@ -3032,6 +3041,12 @@ server <- function(input, output, session) {
     mr <- FALSE #Reinitialize variable
     output$map <- renderLeaflet(map_shown)
     
+    # Render from map_rv()
+    output$map <- renderLeaflet({
+      req(map_rv())
+      map_rv()
+    })
+    
     
     #Convert abbreviation for type task
     if (!is.na(t)) {
@@ -3269,6 +3284,16 @@ server <- function(input, output, session) {
   
   
   
+  # Single download handler for maps (works for real + virtual env)
+  output$downloadMap <- downloadHandler(
+    filename = function() {
+      paste0("map_", Sys.Date(), ".html")
+    },
+    content = function(file) {
+      req(map_rv())
+      htmlwidgets::saveWidget(map_rv(), file = file, selfcontained = TRUE)
+    }
+  )
   
   
 }
