@@ -437,6 +437,29 @@ ui <- page_sidebar(
 
 server <- function(input, output, session) {
   
+  #####---------TYPE CONVERSION HELPER FUNCTIONS FOR VR HELEN'S Tasks - Start--------######
+  num <- function(x) suppressWarnings(as.numeric(x))
+  
+  get_correct_bearing <- function(j, evts) {
+    b1 <- try(evts$task$question$initialAvatarPosition$bearing[j], silent = TRUE)
+    if (!inherits(b1, "try-error") && length(b1) && !is.na(b1)) return(num(b1))
+    b2 <- try(evts$task$question$direction$bearing[j], silent = TRUE)
+    if (!inherits(b2, "try-error") && length(b2) && !is.na(b2)) return(num(b2))
+    b3 <- try(evts$compassHeading[j], silent = TRUE)
+    return(num(b3))
+  }
+  
+  get_answer_bearing <- function(j, evts) {
+    a1 <- try(evts$answer$clickDirection[j], silent = TRUE)
+    if (!inherits(a1, "try-error") && length(a1) && !is.na(a1)) return(num(a1))
+    a2 <- try(evts$answer$compassHeading[j], silent = TRUE)
+    return(num(a2))
+  }
+  #####---------TYPE CONVERSION HELPER FUNCTIONS FOR VR HELEN'S Tasks - end--------######
+  
+  
+  
+  
   # Store selected game track data reactively
   selected_game_tracks_rv <- reactiveVal()
   num_value_num <- reactive({ as.numeric(input$num_value) })
@@ -943,37 +966,40 @@ server <- function(input, output, session) {
     #print(cbind(data[[1]]$events$task$type, data[[1]]$events$correct,data[[1]]$events$answer$correct))
     #print(ans)
     
-    #Distance to the correct answer
-    dist1_m <- list()  #dist in m
-    dist1_deg <- list()  #dist in degrees - by the player, we can compare both
-    dist2_deg <-list()   #dist in degree - right answer
+    # Distance to the correct answer
+    dist1_m   <- list()   # meters
+    dist1_deg <- list()   # player's bearing (deg)
+    dist2_deg <- list()   # correct bearing (deg)
+    
     for (j in 1:(length(id) - 1)) {
       if ((!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
+        # distance in meters (as is)
         dist1_m <- append(dist1_m, data[[1]]$events$answer$distance[j])
-        if (length(data[[1]]$events$task$question$direction$bearing) != 0) { #Two different ways in the JSON for theme-direction
-          if (length(data[[1]]$events$answer$clickDirection) != 0 && !is.na(data[[1]]$events$answer$clickDirection[j])) {
-            dist1_deg <- append(dist1_deg, data[[1]]$events$answer$clickDirection[j]) #with the little arrow on the map
-            dist2_deg <- append(dist2_deg, data[[1]]$events$compassHeading[j])
-          }
-          else {
-            if (length(data[[1]]$events$answer$compassHeading) != 0) {
-              dist1_deg <- append(dist1_deg, data[[1]]$events$answer$compassHeading[j]) #with orientation with tablet
-            }
-            else {
-              dist1_deg <- append(dist1_deg, NA)
-            }
-            
-            dist2_deg <- append(dist2_deg, data[[1]]$events$task$question$direction$bearing[j])
-          }
-        }
-        else {
-          dist1_deg <- append(dist1_deg, NA)
-          dist2_deg <- append(dist2_deg, NA)
-        }
+        
+        # NEW: 
+        ans_bearing <- get_answer_bearing(j, data[[1]]$events)
+        cor_bearing <- get_correct_bearing(j, data[[1]]$events)
+        
+        dist1_deg <- append(dist1_deg, ans_bearing)
+        dist2_deg <- append(dist2_deg, cor_bearing)
       }
     }
     
-    rds <- cbind(unlist(dist1_m),dist_deg = abs(unlist(dist2_deg)-unlist(dist1_deg)))
+    
+    num <- function(x) suppressWarnings(as.numeric(x))
+    
+    d1m   <- num(unlist(dist1_m))
+    d1deg <- num(unlist(dist1_deg))
+    d2deg <- num(unlist(dist2_deg))
+    
+    maxn <- max(length(d1m), length(d1deg), length(d2deg))
+    length(d1m)   <- maxn
+    length(d1deg) <- maxn
+    length(d2deg) <- maxn
+    
+    rds <- cbind(d1m, dist_deg = abs(d2deg - d1deg))
+    #print(rds)
+    
     #print(rds)
     
     ####sometimes we don't need to merge the column
