@@ -1440,6 +1440,28 @@ server <- function(input, output, session) {
       iconAnchorX = 10, iconAnchorY = 20,
     )
     
+    safe_coords <- function(x) {
+      x <- unlist(x)
+      x <- x[is.finite(x) & !is.na(x)]
+      return(x)
+    }
+    
+    long <- safe_coords(long)
+    lati <- safe_coords(lati)
+    traj_lng <- safe_coords(traj_lng)
+    traj_lat <- safe_coords(traj_lat)
+    lng_targ <- safe_coords(lng_targ)
+    lat_targ <- safe_coords(lat_targ)
+    lng_true <- safe_coords(lng_true)
+    lat_true <- safe_coords(lat_true)
+    lng_poly <- safe_coords(lng_poly)
+    lat_poly <- safe_coords(lat_poly)
+    lng_ans_obj <- safe_coords(lng_ans_obj)
+    lat_ans_obj <- safe_coords(lat_ans_obj)
+    dr_point_lng <- safe_coords(dr_point_lng)
+    dr_point_lat <- safe_coords(dr_point_lat)
+    
+    
     #Print map
     if (mr == TRUE || length(ans) <= num_value_num() || (length(lng_targ) == 0 && length(lng_true) == 0 && t == "theme-loc")
         || (length(long) == 0 && length(traj_lat) == 0 && (t == "nav-flag" || t == "nav-text" || t == "nav-arrow" || t == "nav-photo"))) {
