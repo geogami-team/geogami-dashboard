@@ -21,10 +21,10 @@ fetch_games_data_from_server <- function(url, token) {
   message("Fetched data, now processing...")
   # Adds a space between 'Bearer' and the token
   auth_header <- paste("Bearer", token)  
-
+  
   # Make the request with Authorization header
   res <- GET(url, add_headers(Authorization = auth_header))
-
+  
   # Handle the response
   if (status_code(res) == 200) {
     data <- fromJSON(content(res, "text", encoding = "UTF-8"))
@@ -286,10 +286,10 @@ ui <- page_sidebar(
     # div(style = "border: 1px solid #ccc; padding: 10px; margin-bottom: 15px; border-radius: 8px;",
     #     numericInput("num_value", "Enter a task number:", value = 1, min = 1, max = 1)
     # ),
-
+    
     div(
       style = "text-align: left; color: #888; font-size: 12px;",
-
+      
       # "Version 1.5.5 - 12:33 24.10.2025"
       HTML(paste0("Version 1.5.5 - " , format(Sys.time(), "%d.%m.%y %H:%M:%S")))      
     )
@@ -819,35 +819,8 @@ server <- function(input, output, session) {
           size = 10
         )
       )
-      # ,
-      # actionButton("select_all_players2", "Select All"),
-      # actionButton("deselect_all_players2", "Select None")
     )
   })
-  
-  
-  ####-------------'select and deselect all' buttons logic for file_selector_ui2 that is 'stats' tab------------
-  # Select all players (file_selector_ui2)
-  # observeEvent(input$select_all_players2, {
-  #   req(choices_rv())
-  #   req(input$selected_files)
-  #   updateSelectInput(
-  #     session,
-  #     "selected_multiple_files2",
-  #     selected = input$selected_files
-  #   )
-  # })
-  # 
-  # # Deselect all players (file_selector_ui2)
-  # observeEvent(input$deselect_all_players2, {
-  #   req(choices_rv())
-  #   updateSelectInput(
-  #     session,
-  #     "selected_multiple_files2",
-  #     selected = character(0)
-  #   )
-  # })
-  ####-------------'select and deselect all' buttons logic for file_selector_ui2 that is 'stats' tab ENDS------------
   
   
   
@@ -1801,15 +1774,15 @@ server <- function(input, output, session) {
       output$mapLegend <- renderText({paste("Task type:",t)})
       
       #Download map
-      output$downloadMap <- downloadHandler(
-        filename = function() {
-          paste("map_", Sys.Date(), ".html", sep="")
-        },
-        content = function(file) {
-          m <- saveWidget(map_shown, file = file, selfcontained = TRUE)
-        }
-      )
-      
+      # output$downloadMap <- downloadHandler(
+      #   filename = function() {
+      #     paste("map_", Sys.Date(), ".html", sep="")
+      #   },
+      #   content = function(file) {
+      #     m <- saveWidget(map_shown, file = file, selfcontained = TRUE)
+      #   }
+      # )
+      # 
       
       #photo code starts---------------------
       cou <- 1 #counter
@@ -2107,11 +2080,11 @@ server <- function(input, output, session) {
       maxn <- max(length(d1deg_new), length(d2deg_new))
       length(d1deg_new) <- maxn
       length(d2deg_new) <- maxn
-
+      
       deg_error <- abs(d2deg_new - d1deg_new)
       
       
-     
+      
       # CORRECT & ERRORS
       if (length(d1deg_new) >= num_value_num()) {
         idx <- num_value_num()
@@ -2488,7 +2461,7 @@ server <- function(input, output, session) {
       }
     }
     
-   
+    
     num <- function(x) suppressWarnings(as.numeric(x))
     
     d1m   <- num(unlist(dist1_m))
@@ -3509,13 +3482,59 @@ server <- function(input, output, session) {
   
   
   # Single download handler for maps (works for real + virtual env)
+  # output$downloadMap <- downloadHandler(
+  #   filename = function() {
+  #     paste0("map_", Sys.Date(), ".html")
+  #   },
+  #   content = function(file) {
+  #     req(map_rv())
+  #     htmlwidgets::saveWidget(map_rv(), file = file, selfcontained = TRUE)
+  #   }
+  # )
+  
   output$downloadMap <- downloadHandler(
     filename = function() {
-      paste0("map_", Sys.Date(), ".html")
+      paste0("map_", Sys.Date(), ".zip")
     },
     content = function(file) {
       req(map_rv())
-      htmlwidgets::saveWidget(map_rv(), file = file, selfcontained = TRUE)
+      
+      # Temp dir for export
+      tmpdir <- tempfile("map_export_")
+      dir.create(tmpdir)
+      
+      # have Saved widget 
+      htmlfile <- file.path(tmpdir, "map.html")
+      htmlwidgets::saveWidget(
+        widget = map_rv(),
+        file   = htmlfile,
+        selfcontained = FALSE
+      )
+      # At this point tmpdir contains:
+      #   - map.html
+      #   - map_files/   (Leaflet JS/CSS etc.)
+      
+      #Copied virtual-environment images into assets/vir_envs_layers
+      from_dir <- file.path(getwd(), "www", "assets", "vir_envs_layers")
+      to_dir   <- file.path(tmpdir, "assets", "vir_envs_layers")
+      dir.create(to_dir, recursive = TRUE, showWarnings = FALSE)
+      
+      if (dir.exists(from_dir)) {
+        file.copy(
+          from = list.files(from_dir, full.names = TRUE),
+          to   = to_dir,
+          recursive = TRUE
+        )
+      }
+      
+      # Zipped EVERYTHING in tmpdir (html + *_files + assets)
+      oldwd <- getwd()
+      setwd(tmpdir)
+      zip::zipr(
+        zipfile = file,
+        files   = list.files()  # "map.html", "map_files", "assets", …
+      )
+      setwd(oldwd)
     }
   )
   
