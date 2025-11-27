@@ -2016,7 +2016,7 @@ server <- function(input, output, session) {
       
       
       for (k in 1:length(ans2)) {
-        if (!is.na(typ2[[k]][1]) && (typ2[[k]][1] == "nav-photo" || typ2[[k]][1] == "nav-arrow" || typ2[[k]][1] == "nav-text") && tmp2[[k]][1] != 0) {
+        if (!is.na(typ2[[k]][1]) && (typ2[[k]][1] == "nav-photo" || typ2[[k]][1] == "nav-arrow" || typ2[[k]][1] == "nav-text") && tmp2[[k]][1] != 0 && is.na(ans2[[k]][1])) {
           ans2[[k]][1] <- "Correct"
         }
         if (!is.na(ans2[[k]][1]) && ans2[[k]][1] == TRUE) {
