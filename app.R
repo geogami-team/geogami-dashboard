@@ -492,32 +492,82 @@ server <- function(input, output, session) {
     paste("Current theme is:", input$theme)
   })
   
+  # observe({
+  #   ## 1. Load list of user games / games that user has access to their tracks
+  #   # Define the API URL and token
+  #   apiUrl <- paste0(apiURL_rv(), "/game/usergames")
+  #   games_data <- fetch_games_data_from_server(apiUrl, accessToken_rv())
+  #   games_name <- games_data$name
+  #   if (is.null(games_data)) {
+  #     games_name <- character(0)
+  #     games_id <- character(0)
+  #   } else {
+  #     games_name <- games_data$name
+  #     games_id <- games_data[["_id"]]
+  #   }
+  # 
+  #   ### 2. Populate select input for games
+  #   mapping <- setNames(games_id, games_name)
+  #   games_choices_rv(mapping)  #MADE THIS CHANGE FOR CREATING ZIP FILE NAME (download button issue) AS PER THE GAME LOADED
+  #   updatePickerInput(session, "selected_games",
+  #                     choices = mapping)
+  # 
+  #   output$info_download <- renderText({
+  #     ""
+  #   })
+  # })
+  
   observe({
     ## 1. Load list of user games / games that user has access to their tracks
     # Define the API URL and token
     apiUrl <- paste0(apiURL_rv(), "/game/usergames")
     games_data <- fetch_games_data_from_server(apiUrl, accessToken_rv())
-    games_name <- games_data$name
-    if (is.null(games_data)) {
-      games_name <- character(0)
-      games_id <- character(0)
-    } else {
+
+    # Default empty
+    games_name <- character(0)
+    games_id   <- character(0)
+
+    if (!is.null(games_data) && nrow(games_data) > 0) {
+      # --- sort games by createdAt (newest first) ---
+      if (!is.null(games_data$createdAt)) {
+        ord <- order(games_data$createdAt, decreasing = TRUE)
+        games_data <- games_data[ord, , drop = FALSE]
+      }
+
       games_name <- games_data$name
-      games_id <- games_data[["_id"]]
+      games_id   <- games_data[["_id"]]
     }
-    
-    ### 2. Populate select input for games
+
+    ### 2. Populated select input for games
     mapping <- setNames(games_id, games_name)
-    games_choices_rv(mapping)  #MADE THIS CHANGE FOR CREATING ZIP FILE NAME (download button issue) AS PER THE GAME LOADED
-    updatePickerInput(session, "selected_games",
-                      choices = mapping)
-    
-    output$info_download <- renderText({
-      ""
-    })
+    games_choices_rv(mapping)  # used later e.g. for ZIP filename
+
+    updatePickerInput(
+      session, "selected_games",
+      choices = mapping
+    )
+
+    output$info_download <- renderText({ "" })
   })
   
-  ### 3. When a game is selected
+  
+  
+  
+  # ### 3. When a game is selected
+  # observeEvent(input$selected_games, {
+  #   game_id <- input$selected_games
+  #   
+  #   # update the API URL with the selected game ID
+  #   apiUrl <- paste0(apiURL_rv(), "/track/gametracks/", game_id)
+  #   
+  #   # Fetch game's tracks data from API
+  #   # Note: The token is used for authentication, ensure it is valid
+  #   games_tracks <- fetch_games_data_from_server(apiUrl, accessToken_rv())
+  #   
+  #   # Store in reactive value
+  #   selected_game_tracks_rv(games_tracks)
+  # })
+  
   observeEvent(input$selected_games, {
     game_id <- input$selected_games
     
@@ -528,31 +578,67 @@ server <- function(input, output, session) {
     # Note: The token is used for authentication, ensure it is valid
     games_tracks <- fetch_games_data_from_server(apiUrl, accessToken_rv())
     
+    # --- NEW: sort tracks by createdAt (newest first) ---
+    if (!is.null(games_tracks) && !is.null(games_tracks$createdAt)) {
+      ord <- order(games_tracks$createdAt, decreasing = TRUE)
+      games_tracks <- games_tracks[ord, , drop = FALSE]
+    }
+    
     # Store in reactive value
     selected_game_tracks_rv(games_tracks)
   })
   
+  
   ### 4. Update file selector when data changes
+  # observe({
+  #   tracks_data <- selected_game_tracks_rv()
+  #   
+  #   if (!is.null(tracks_data)) {
+  #     # Use meaningful labels for the UI: e.g., "Player Name - Date"
+  #     choices <- setNames(
+  #       tracks_data[["_id"]],
+  #       paste0(tracks_data$players, " - ", tracks_data$createdAt)
+  #     )
+  #     
+  #     # saving this mapping for reuse in a reactive variable
+  #     choices_rv(choices)
+  #     
+  #     
+  #     updatePickerInput(session, "selected_files",
+  #                       choices = choices)
+  #     
+  #     output$info_download <- renderText({
+  #       ""
+  #     })
+  #   }
+  # })
+  
+  
   observe({
     tracks_data <- selected_game_tracks_rv()
     
     if (!is.null(tracks_data)) {
-      # Use meaningful labels for the UI: e.g., "Player Name - Date"
+      # (tracks_data is already sorted above, but this keeps it robust)
+      if (!is.null(tracks_data$createdAt)) {
+        ord <- order(tracks_data$createdAt, decreasing = TRUE)
+        tracks_data <- tracks_data[ord, , drop = FALSE]
+      }
+      
+      # Labels: "Player - createdAt"
       choices <- setNames(
         tracks_data[["_id"]],
         paste0(tracks_data$players, " - ", tracks_data$createdAt)
       )
       
-      # saving this mapping for reuse in a reactive variable
+      # Save mapping for reuse
       choices_rv(choices)
       
+      updatePickerInput(
+        session, "selected_files",
+        choices = choices
+      )
       
-      updatePickerInput(session, "selected_files",
-                        choices = choices)
-      
-      output$info_download <- renderText({
-        ""
-      })
+      output$info_download <- renderText({ "" })
     }
   })
   
