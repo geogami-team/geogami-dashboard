@@ -1818,10 +1818,10 @@ server <- function(input, output, session) {
       # Store in reactive value
       map_rv(map_virtual)
       
-      output$map <- renderLeaflet({
-        req(map_rv())
-        map_rv()
-      })
+      # output$map <- renderLeaflet({
+      #   req(map_rv())
+      #   map_rv()
+      # })
       
       # Convert abbreviation for type task
       if (!is.na(t)) {
@@ -3326,10 +3326,10 @@ server <- function(input, output, session) {
       # Store in reactive value
       map_rv(map_virtual)
       
-      output$map <- renderLeaflet({
-        req(map_rv())
-        map_rv()
-      })
+      # output$map <- renderLeaflet({
+      #   req(map_rv())
+      #   map_rv()
+      # })
       
       # Convert abbreviation for type task
       if (!is.na(t)) {
@@ -3565,7 +3565,10 @@ server <- function(input, output, session) {
     }
   })
   
-  
+  output$map <- renderLeaflet({
+    req(map_rv())
+    map_rv()
+  })
   
   # Single download handler for maps (works for real + virtual env)
   # output$downloadMap <- downloadHandler(
@@ -3584,12 +3587,12 @@ server <- function(input, output, session) {
     },
     content = function(file) {
       req(map_rv())
-      
+
       # Temp dir for export
       tmpdir <- tempfile("map_export_")
       dir.create(tmpdir)
-      
-      # have Saved widget 
+
+      # have Saved widget
       htmlfile <- file.path(tmpdir, "map.html")
       htmlwidgets::saveWidget(
         widget = map_rv(),
@@ -3599,12 +3602,12 @@ server <- function(input, output, session) {
       # At this point tmpdir contains:
       #   - map.html
       #   - map_files/   (Leaflet JS/CSS etc.)
-      
+
       #Copied virtual-environment images into assets/vir_envs_layers
       from_dir <- file.path(getwd(), "www", "assets", "vir_envs_layers")
       to_dir   <- file.path(tmpdir, "assets", "vir_envs_layers")
       dir.create(to_dir, recursive = TRUE, showWarnings = FALSE)
-      
+
       if (dir.exists(from_dir)) {
         file.copy(
           from = list.files(from_dir, full.names = TRUE),
@@ -3612,7 +3615,7 @@ server <- function(input, output, session) {
           recursive = TRUE
         )
       }
-      
+
       # Zipped EVERYTHING in tmpdir (html + *_files + assets)
       oldwd <- getwd()
       setwd(tmpdir)
