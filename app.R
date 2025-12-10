@@ -21,10 +21,10 @@ fetch_games_data_from_server <- function(url, token) {
   message("Fetched data, now processing...")
   # Adds a space between 'Bearer' and the token
   auth_header <- paste("Bearer", token)  
-
+  
   # Make the request with Authorization header
   res <- GET(url, add_headers(Authorization = auth_header))
-
+  
   # Handle the response
   if (status_code(res) == 200) {
     data <- fromJSON(content(res, "text", encoding = "UTF-8"))
@@ -286,10 +286,10 @@ ui <- page_sidebar(
     # div(style = "border: 1px solid #ccc; padding: 10px; margin-bottom: 15px; border-radius: 8px;",
     #     numericInput("num_value", "Enter a task number:", value = 1, min = 1, max = 1)
     # ),
-
+    
     div(
       style = "text-align: left; color: #888; font-size: 12px;",
-
+      
       # "Version 1.5.5 - 12:33 24.10.2025"
       HTML(paste0("Version 1.5.5 - " , format(Sys.time(), "%d.%m.%y %H:%M:%S")))      
     )
@@ -437,6 +437,29 @@ ui <- page_sidebar(
 
 server <- function(input, output, session) {
   
+  #####---------TYPE CONVERSION HELPER FUNCTIONS FOR VR HELEN'S Tasks - Start--------######
+  num <- function(x) suppressWarnings(as.numeric(x))
+  
+  get_correct_bearing <- function(j, evts) {
+    b1 <- try(evts$task$question$initialAvatarPosition$bearing[j], silent = TRUE)
+    if (!inherits(b1, "try-error") && length(b1) && !is.na(b1)) return(num(b1))
+    b2 <- try(evts$task$question$direction$bearing[j], silent = TRUE)
+    if (!inherits(b2, "try-error") && length(b2) && !is.na(b2)) return(num(b2))
+    b3 <- try(evts$compassHeading[j], silent = TRUE)
+    return(num(b3))
+  }
+  
+  get_answer_bearing <- function(j, evts) {
+    a1 <- try(evts$answer$clickDirection[j], silent = TRUE)
+    if (!inherits(a1, "try-error") && length(a1) && !is.na(a1)) return(num(a1))
+    a2 <- try(evts$answer$compassHeading[j], silent = TRUE)
+    return(num(a2))
+  }
+  #####---------TYPE CONVERSION HELPER FUNCTIONS FOR VR HELEN'S Tasks - end--------######
+  
+  map_rv <- reactiveVal(NULL)
+  
+  
   # Store selected game track data reactively
   selected_game_tracks_rv <- reactiveVal()
   num_value_num <- reactive({ as.numeric(input$num_value) })
@@ -469,32 +492,82 @@ server <- function(input, output, session) {
     paste("Current theme is:", input$theme)
   })
   
+  # observe({
+  #   ## 1. Load list of user games / games that user has access to their tracks
+  #   # Define the API URL and token
+  #   apiUrl <- paste0(apiURL_rv(), "/game/usergames")
+  #   games_data <- fetch_games_data_from_server(apiUrl, accessToken_rv())
+  #   games_name <- games_data$name
+  #   if (is.null(games_data)) {
+  #     games_name <- character(0)
+  #     games_id <- character(0)
+  #   } else {
+  #     games_name <- games_data$name
+  #     games_id <- games_data[["_id"]]
+  #   }
+  # 
+  #   ### 2. Populate select input for games
+  #   mapping <- setNames(games_id, games_name)
+  #   games_choices_rv(mapping)  #MADE THIS CHANGE FOR CREATING ZIP FILE NAME (download button issue) AS PER THE GAME LOADED
+  #   updatePickerInput(session, "selected_games",
+  #                     choices = mapping)
+  # 
+  #   output$info_download <- renderText({
+  #     ""
+  #   })
+  # })
+  
   observe({
     ## 1. Load list of user games / games that user has access to their tracks
     # Define the API URL and token
     apiUrl <- paste0(apiURL_rv(), "/game/usergames")
     games_data <- fetch_games_data_from_server(apiUrl, accessToken_rv())
-    games_name <- games_data$name
-    if (is.null(games_data)) {
-      games_name <- character(0)
-      games_id <- character(0)
-    } else {
+
+    # Default empty
+    games_name <- character(0)
+    games_id   <- character(0)
+
+    if (!is.null(games_data) && nrow(games_data) > 0) {
+      # --- sort games by createdAt (newest first) ---
+      if (!is.null(games_data$createdAt)) {
+        ord <- order(games_data$createdAt, decreasing = TRUE)
+        games_data <- games_data[ord, , drop = FALSE]
+      }
+
       games_name <- games_data$name
-      games_id <- games_data[["_id"]]
+      games_id   <- games_data[["_id"]]
     }
-    
-    ### 2. Populate select input for games
+
+    ### 2. Populated select input for games
     mapping <- setNames(games_id, games_name)
-    games_choices_rv(mapping)  #MADE THIS CHANGE FOR CREATING ZIP FILE NAME (download button issue) AS PER THE GAME LOADED
-    updatePickerInput(session, "selected_games",
-                      choices = mapping)
-    
-    output$info_download <- renderText({
-      ""
-    })
+    games_choices_rv(mapping)  # used later e.g. for ZIP filename
+
+    updatePickerInput(
+      session, "selected_games",
+      choices = mapping
+    )
+
+    output$info_download <- renderText({ "" })
   })
   
-  ### 3. When a game is selected
+  
+  
+  
+  # ### 3. When a game is selected
+  # observeEvent(input$selected_games, {
+  #   game_id <- input$selected_games
+  #   
+  #   # update the API URL with the selected game ID
+  #   apiUrl <- paste0(apiURL_rv(), "/track/gametracks/", game_id)
+  #   
+  #   # Fetch game's tracks data from API
+  #   # Note: The token is used for authentication, ensure it is valid
+  #   games_tracks <- fetch_games_data_from_server(apiUrl, accessToken_rv())
+  #   
+  #   # Store in reactive value
+  #   selected_game_tracks_rv(games_tracks)
+  # })
+  
   observeEvent(input$selected_games, {
     game_id <- input$selected_games
     
@@ -505,31 +578,67 @@ server <- function(input, output, session) {
     # Note: The token is used for authentication, ensure it is valid
     games_tracks <- fetch_games_data_from_server(apiUrl, accessToken_rv())
     
+    # --- NEW: sort tracks by createdAt (newest first) ---
+    if (!is.null(games_tracks) && !is.null(games_tracks$createdAt)) {
+      ord <- order(games_tracks$createdAt, decreasing = TRUE)
+      games_tracks <- games_tracks[ord, , drop = FALSE]
+    }
+    
     # Store in reactive value
     selected_game_tracks_rv(games_tracks)
   })
   
+  
   ### 4. Update file selector when data changes
+  # observe({
+  #   tracks_data <- selected_game_tracks_rv()
+  #   
+  #   if (!is.null(tracks_data)) {
+  #     # Use meaningful labels for the UI: e.g., "Player Name - Date"
+  #     choices <- setNames(
+  #       tracks_data[["_id"]],
+  #       paste0(tracks_data$players, " - ", tracks_data$createdAt)
+  #     )
+  #     
+  #     # saving this mapping for reuse in a reactive variable
+  #     choices_rv(choices)
+  #     
+  #     
+  #     updatePickerInput(session, "selected_files",
+  #                       choices = choices)
+  #     
+  #     output$info_download <- renderText({
+  #       ""
+  #     })
+  #   }
+  # })
+  
+  
   observe({
     tracks_data <- selected_game_tracks_rv()
     
     if (!is.null(tracks_data)) {
-      # Use meaningful labels for the UI: e.g., "Player Name - Date"
+      # (tracks_data is already sorted above, but this keeps it robust)
+      if (!is.null(tracks_data$createdAt)) {
+        ord <- order(tracks_data$createdAt, decreasing = TRUE)
+        tracks_data <- tracks_data[ord, , drop = FALSE]
+      }
+      
+      # Labels: "Player - createdAt"
       choices <- setNames(
         tracks_data[["_id"]],
         paste0(tracks_data$players, " - ", tracks_data$createdAt)
       )
       
-      # saving this mapping for reuse in a reactive variable
+      # Save mapping for reuse
       choices_rv(choices)
       
+      updatePickerInput(
+        session, "selected_files",
+        choices = choices
+      )
       
-      updatePickerInput(session, "selected_files",
-                        choices = choices)
-      
-      output$info_download <- renderText({
-        ""
-      })
+      output$info_download <- renderText({ "" })
     }
   })
   
@@ -796,35 +905,8 @@ server <- function(input, output, session) {
           size = 10
         )
       )
-      # ,
-      # actionButton("select_all_players2", "Select All"),
-      # actionButton("deselect_all_players2", "Select None")
     )
   })
-  
-  
-  ####-------------'select and deselect all' buttons logic for file_selector_ui2 that is 'stats' tab------------
-  # Select all players (file_selector_ui2)
-  # observeEvent(input$select_all_players2, {
-  #   req(choices_rv())
-  #   req(input$selected_files)
-  #   updateSelectInput(
-  #     session,
-  #     "selected_multiple_files2",
-  #     selected = input$selected_files
-  #   )
-  # })
-  # 
-  # # Deselect all players (file_selector_ui2)
-  # observeEvent(input$deselect_all_players2, {
-  #   req(choices_rv())
-  #   updateSelectInput(
-  #     session,
-  #     "selected_multiple_files2",
-  #     selected = character(0)
-  #   )
-  # })
-  ####-------------'select and deselect all' buttons logic for file_selector_ui2 that is 'stats' tab ENDS------------
   
   
   
@@ -943,37 +1025,40 @@ server <- function(input, output, session) {
     #print(cbind(data[[1]]$events$task$type, data[[1]]$events$correct,data[[1]]$events$answer$correct))
     #print(ans)
     
-    #Distance to the correct answer
-    dist1_m <- list()  #dist in m
-    dist1_deg <- list()  #dist in degrees - by the player, we can compare both
-    dist2_deg <-list()   #dist in degree - right answer
+    # Distance to the correct answer
+    dist1_m   <- list()   # meters
+    dist1_deg <- list()   # player's bearing (deg)
+    dist2_deg <- list()   # correct bearing (deg)
+    
     for (j in 1:(length(id) - 1)) {
       if ((!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
+        # distance in meters (as is)
         dist1_m <- append(dist1_m, data[[1]]$events$answer$distance[j])
-        if (length(data[[1]]$events$task$question$direction$bearing) != 0) { #Two different ways in the JSON for theme-direction
-          if (length(data[[1]]$events$answer$clickDirection) != 0 && !is.na(data[[1]]$events$answer$clickDirection[j])) {
-            dist1_deg <- append(dist1_deg, data[[1]]$events$answer$clickDirection[j]) #with the little arrow on the map
-            dist2_deg <- append(dist2_deg, data[[1]]$events$compassHeading[j])
-          }
-          else {
-            if (length(data[[1]]$events$answer$compassHeading) != 0) {
-              dist1_deg <- append(dist1_deg, data[[1]]$events$answer$compassHeading[j]) #with orientation with tablet
-            }
-            else {
-              dist1_deg <- append(dist1_deg, NA)
-            }
-            
-            dist2_deg <- append(dist2_deg, data[[1]]$events$task$question$direction$bearing[j])
-          }
-        }
-        else {
-          dist1_deg <- append(dist1_deg, NA)
-          dist2_deg <- append(dist2_deg, NA)
-        }
+        
+        # NEW: 
+        ans_bearing <- get_answer_bearing(j, data[[1]]$events)
+        cor_bearing <- get_correct_bearing(j, data[[1]]$events)
+        
+        dist1_deg <- append(dist1_deg, ans_bearing)
+        dist2_deg <- append(dist2_deg, cor_bearing)
       }
     }
     
-    rds <- cbind(unlist(dist1_m),dist_deg = abs(unlist(dist2_deg)-unlist(dist1_deg)))
+    
+    num <- function(x) suppressWarnings(as.numeric(x))
+    
+    d1m   <- num(unlist(dist1_m))
+    d1deg <- num(unlist(dist1_deg))
+    d2deg <- num(unlist(dist2_deg))
+    
+    maxn <- max(length(d1m), length(d1deg), length(d2deg))
+    length(d1m)   <- maxn
+    length(d1deg) <- maxn
+    length(d2deg) <- maxn
+    
+    rds <- cbind(d1m, dist_deg = abs(d2deg - d1deg))
+    #print(rds)
+    
     #print(rds)
     
     ####sometimes we don't need to merge the column
@@ -1414,6 +1499,28 @@ server <- function(input, output, session) {
       iconAnchorX = 10, iconAnchorY = 20,
     )
     
+    safe_coords <- function(x) {
+      x <- unlist(x)
+      x <- x[is.finite(x) & !is.na(x)]
+      return(x)
+    }
+    
+    long <- safe_coords(long)
+    lati <- safe_coords(lati)
+    traj_lng <- safe_coords(traj_lng)
+    traj_lat <- safe_coords(traj_lat)
+    lng_targ <- safe_coords(lng_targ)
+    lat_targ <- safe_coords(lat_targ)
+    lng_true <- safe_coords(lng_true)
+    lat_true <- safe_coords(lat_true)
+    lng_poly <- safe_coords(lng_poly)
+    lat_poly <- safe_coords(lat_poly)
+    lng_ans_obj <- safe_coords(lng_ans_obj)
+    lat_ans_obj <- safe_coords(lat_ans_obj)
+    dr_point_lng <- safe_coords(dr_point_lng)
+    dr_point_lat <- safe_coords(dr_point_lat)
+    
+    
     #Print map
     if (mr == TRUE || length(ans) <= num_value_num() || (length(lng_targ) == 0 && length(lng_true) == 0 && t == "theme-loc")
         || (length(long) == 0 && length(traj_lat) == 0 && (t == "nav-flag" || t == "nav-text" || t == "nav-arrow" || t == "nav-photo"))) {
@@ -1493,9 +1600,10 @@ server <- function(input, output, session) {
     print(init_task_indices)
     
     if (is.null(data[[1]]$events$task$virEnvType[init_task_indices[num_value_num()]])) {
-      # 1. To render realworld map
-      output$map <- renderLeaflet(map_shown)
+      # 1. Real-world map: just use map_shown as built above
+      map_rv(map_shown)
     } else {
+      
       # 2. To render virtual environment map
       # Extract virEnvName and floor if 3d building for those events 
       virEnvLayers <- character(0)      # for virtual environment layers / images names
@@ -1523,8 +1631,8 @@ server <- function(input, output, session) {
         file.path(getwd(), "www", "virEnvsProperties.json")
       )
       
-      # render virtual environment map
-      output$map <- renderLeaflet({
+      # Build virtual environment map once
+      map_virtual <- {
         # Default empty map
         map_shown <- leaflet() %>%
           addTiles() %>%
@@ -1705,7 +1813,15 @@ server <- function(input, output, session) {
                            virEnvLayer = virEnvLayers[num_value_num()],
                            virEnvsProperties = virEnvsProperties)
           )
-      })
+      }
+      
+      # Store in reactive value
+      map_rv(map_virtual)
+      
+      # output$map <- renderLeaflet({
+      #   req(map_rv())
+      #   map_rv()
+      # })
       
       # Convert abbreviation for type task
       if (!is.na(t)) {
@@ -1744,15 +1860,15 @@ server <- function(input, output, session) {
       output$mapLegend <- renderText({paste("Task type:",t)})
       
       #Download map
-      output$downloadMap <- downloadHandler(
-        filename = function() {
-          paste("map_", Sys.Date(), ".html", sep="")
-        },
-        content = function(file) {
-          m <- saveWidget(map_shown, file = file, selfcontained = TRUE)
-        }
-      )
-      
+      # output$downloadMap <- downloadHandler(
+      #   filename = function() {
+      #     paste("map_", Sys.Date(), ".html", sep="")
+      #   },
+      #   content = function(file) {
+      #     m <- saveWidget(map_shown, file = file, selfcontained = TRUE)
+      #   }
+      # )
+      # 
       
       #photo code starts---------------------
       cou <- 1 #counter
@@ -1959,7 +2075,7 @@ server <- function(input, output, session) {
       
       
       for (k in 1:length(ans2)) {
-        if (!is.na(typ2[[k]][1]) && (typ2[[k]][1] == "nav-photo" || typ2[[k]][1] == "nav-arrow" || typ2[[k]][1] == "nav-text") && tmp2[[k]][1] != 0) {
+        if (!is.na(typ2[[k]][1]) && (typ2[[k]][1] == "nav-photo" || typ2[[k]][1] == "nav-arrow" || typ2[[k]][1] == "nav-text") && tmp2[[k]][1] != 0 && is.na(ans2[[k]][1])) {
           ans2[[k]][1] <- "Correct"
         }
         if (!is.na(ans2[[k]][1]) && ans2[[k]][1] == TRUE) {
@@ -2043,14 +2159,37 @@ server <- function(input, output, session) {
         }
       }
       
+      # Coerce degree lists to numeric and align lengths
+      d1deg_new <- num(unlist(dist1_deg_new))
+      d2deg_new <- num(unlist(dist2_deg_new))
       
-      #CORRECT & ERRORS
-      if (length(dist1_deg_new) >= num_value_num()) {
-        if (!is.na(unlist(ans2[[num_value_num()]][1])) || !is.na(unlist(dist1_deg_new[[num_value_num()]][1]))) { #Verify if the direction task is played or not
-          core <- cbind(Name = data2[[i]]$players[1], Correct = unlist(ans2[[num_value_num()]][1]), Answer = paste(round(unlist(dist1_deg_new[[num_value_num()]][1]),3),"°"), Error = paste(round(unlist(abs(unlist(dist2_deg_new)-unlist(dist1_deg_new))[[num_value_num()]][1]),3),"°"))
+      maxn <- max(length(d1deg_new), length(d2deg_new))
+      length(d1deg_new) <- maxn
+      length(d2deg_new) <- maxn
+      
+      deg_error <- abs(d2deg_new - d1deg_new)
+      
+      
+      
+      # CORRECT & ERRORS
+      if (length(d1deg_new) >= num_value_num()) {
+        idx <- num_value_num()
+        
+        if (!is.na(ans2[[idx]][1]) || !is.na(d1deg_new[idx])) {
+          err_val   <- deg_error[idx]
+          answer_deg <- d1deg_new[idx]
+          
+          core <- cbind(
+            Name   = data2[[i]]$players[1],
+            Correct= ans2[[idx]][1],
+            Answer = paste(round(answer_deg, 3), "°"),
+            Error  = paste(round(err_val,      3), "°")
+          )
+          
           cores <- rbind(cores, core)
         }
       }
+      
       
       #Computing correct or incorrect tries
       if (length(ans2) >= num_value_num()) { #outside index
@@ -2389,42 +2528,41 @@ server <- function(input, output, session) {
     #print(cbind(data[[1]]$events$task$type, data[[1]]$events$correct,data[[1]]$events$answer$correct))
     #print(ans)
     
-    #Distance to the correct answer
-    dist1_m <- list()  #dist in m
-    dist1_deg <- list()  #dist in degrees - by the player, we can compare both
-    dist2_deg <-list()   #dist in degree - right answer
+    # Distance to the correct answer
+    dist1_m   <- list()   # meters
+    dist1_deg <- list()   # player's bearing (deg)
+    dist2_deg <- list()   # correct bearing (deg)
+    
     for (j in 1:(length(id) - 1)) {
       if ((!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
+        # distance in meters (as is)
         dist1_m <- append(dist1_m, data[[1]]$events$answer$distance[j])
-        if (length(data[[1]]$events$task$question$direction$bearing) != 0) { #Two different ways in the JSON for theme-direction
-          if (length(data[[1]]$events$answer$clickDirection) != 0 && !is.na(data[[1]]$events$answer$clickDirection[j])) {
-            dist1_deg <- append(dist1_deg, data[[1]]$events$answer$clickDirection[j]) #with the little arrow on the map
-            dist2_deg <- append(dist2_deg, data[[1]]$events$compassHeading[j])
-          }
-          else {
-            if (length(data[[1]]$events$answer$compassHeading) != 0) {
-              dist1_deg <- append(dist1_deg, data[[1]]$events$answer$compassHeading[j]) #with orientation with tablet
-            }
-            else {
-              dist1_deg <- append(dist1_deg, NA)
-            }
-            
-            dist2_deg <- append(dist2_deg, data[[1]]$events$task$question$direction$bearing[j])
-          }
-        }
-        else {
-          dist1_deg <- append(dist1_deg, NA)
-          dist2_deg <- append(dist2_deg, NA)
-        }
+        
+        # NEW: 
+        ans_bearing <- get_answer_bearing(j, data[[1]]$events)
+        cor_bearing <- get_correct_bearing(j, data[[1]]$events)
+        
+        dist1_deg <- append(dist1_deg, ans_bearing)
+        dist2_deg <- append(dist2_deg, cor_bearing)
       }
     }
-    # print("error printed")
-    # print(input$num_value)
     
     
+    num <- function(x) suppressWarnings(as.numeric(x))
     
-    rds <- cbind(unlist(dist1_m),dist_deg = abs(unlist(dist2_deg)-unlist(dist1_deg)))
+    d1m   <- num(unlist(dist1_m))
+    d1deg <- num(unlist(dist1_deg))
+    d2deg <- num(unlist(dist2_deg))
+    
+    maxn <- max(length(d1m), length(d1deg), length(d2deg))
+    length(d1m)   <- maxn
+    length(d1deg) <- maxn
+    length(d2deg) <- maxn
+    
+    rds <- cbind(d1m, dist_deg = abs(d2deg - d1deg))
     #print(rds)
+    
+    
     
     ####sometimes we don't need to merge the column
     if (ncol(rds) == 2) {
@@ -2960,57 +3098,287 @@ server <- function(input, output, session) {
     }
     
     mr <- FALSE #Reinitialize variable
-    output$map <- renderLeaflet(map_shown)
+    ### Rendering map
     
+    ## Extract virtual environment names which have INIT_TASK events, to exclude other events
+    ## here having init-task twice for one task will cause an issue, this migth happen if user uses previous button
+    # Get events where type = INIT_TASK 
+    init_task_indices <- which(data[[1]]$events$type == "INIT_TASK") 
+    message("----- init_task_indices: ")
+    print(init_task_indices)
     
-    #Convert abbreviation for type task
-    if (!is.na(t)) {
-      if (t == "nav-flag") {
-        t <- "Navigation to flag"
+    if (is.null(data[[1]]$events$task$virEnvType[init_task_indices[num_value_num()]])) {
+      # 1. Real-world map: just use map_shown as built above
+      map_rv(map_shown)
+    } else {
+      
+      # 2. To render virtual environment map
+      # Extract virEnvName and floor if 3d building for those events 
+      virEnvLayers <- character(0)      # for virtual environment layers / images names
+      virEnvNames <- character(0)       # for virtual environemnt names
+      sapply(
+        init_task_indices, function(i) { 
+          if (!is.null(data[[1]]$events$task$virEnvType[i])) {
+            val =  data[[1]]$events$task$virEnvType[i]
+            virEnvNames <<- c(virEnvNames, val)
+            
+            if (!is.null(data[[1]]$events$task$floor[i]) && !is.na(data[[1]]$events$task$floor[i])) {
+              virEnvLayers <<- c(virEnvLayers, paste0(val , "_", data[[1]]$events$task$floor[i])) 
+            } 
+            else
+              virEnvLayers <<- c(virEnvLayers, val) 
+          } 
+          else 
+          { NA } 
+        }
+      )
+      
+      # Load virtual environment properties from JSON
+      # virEnvsProperties <- fromJSON("www/virEnvsProperties.json");
+      virEnvsProperties <- jsonlite::fromJSON(
+        file.path(getwd(), "www", "virEnvsProperties.json")
+      )
+      
+      # Build virtual environment map once
+      map_virtual <- {
+        # Default empty map
+        map_shown <- leaflet() %>%
+          addTiles() %>%
+          setView(lng = 7, lat = 51, zoom = 20)
+        
+        # Conditions
+        if (mr == TRUE ||
+            length(ans) <= num_value_num() ||
+            (length(lng_targ) == 0 && length(lng_true) == 0 && t == "theme-loc") ||
+            (length(long) == 0 && length(traj_lat) == 0 &&
+             (t %in% c("nav-flag", "nav-text", "nav-arrow", "nav-photo")))) {
+          
+          map_shown <- leaflet() %>%
+            addTiles() %>%
+            setView(lng = 7, lat = 51, zoom = 20)
+        }
+        
+        if (length(long) != 0 && length(traj_lat) == 0) {
+          map_shown <- leaflet() %>%
+            addTiles() %>%
+            addMarkers(
+              lng = unlist(long)[1],
+              lat = unlist(lati)[1],
+              icon = loc_marker_green
+            ) %>%
+            addCircles(
+              lng = unlist(long)[1],
+              lat = unlist(lati)[1],
+              radius = accuracy_rad,
+              opacity = 0.5
+            )
+        }
+        
+        if (length(long) != 0 && length(traj_lat) != 0) {
+          map_shown <- leaflet() %>%
+            addTiles() %>%
+            addMarkers(
+              lng = unlist(long)[1],
+              lat = unlist(lati)[1],
+              icon = loc_marker_green
+            ) %>%
+            addCircles(
+              lng = unlist(long)[1],
+              lat = unlist(lati)[1],
+              radius = accuracy_rad,
+              opacity = 0.5
+            ) %>%
+            addPolylines(
+              lng = unlist(traj_lng),
+              lat = unlist(traj_lat),
+              color = "red", weight = 2, opacity = 1, stroke = TRUE
+            )
+        }
+        
+        if (length(dr_point_lng) != 0) {
+          map_shown <- leaflet() %>%
+            addTiles() %>%
+            addPolylines(
+              lng = unlist(dr_point_lng),
+              lat = unlist(dr_point_lat),
+              color = "red", weight = 2, opacity = 1, stroke = TRUE
+            )
+        }
+        
+        if (length(lng_targ) != 0 && length(lng_true) != 0) {
+          map_shown <- leaflet() %>%
+            addTiles() %>%
+            addMarkers(
+              lng = tail(unlist(lng_targ), 1),
+              lat = tail(unlist(lat_targ), 1),
+              icon = loc_marker
+            ) %>%
+            addMarkers(
+              lng = tail(unlist(lng_true), 1),
+              lat = tail(unlist(lat_true), 1),
+              icon = loc_marker_green
+            ) %>%
+            addCircles(
+              lng = tail(unlist(lng_true), 1),
+              lat = tail(unlist(lat_true), 1),
+              radius = accuracy_rad
+            )
+        }
+        
+        if (length(lng_targ) == 0 && length(lng_true) != 0) {
+          map_shown <- leaflet() %>%
+            addTiles() %>%
+            addMarkers(
+              lng = tail(unlist(lng_true), 1),
+              lat = tail(unlist(lat_true), 1),
+              icon = loc_marker_green
+            ) %>%
+            addCircles(
+              lng = tail(unlist(lng_true), 1),
+              lat = tail(unlist(lat_true), 1),
+              radius = accuracy_rad
+            )
+        }
+        
+        if (length(lng_poly) != 0 && length(lng_ans_obj) == 0) {
+          map_shown <- leaflet() %>%
+            addTiles() %>%
+            addPolygons(
+              lng = unlist(lng_poly),
+              lat = unlist(lat_poly),
+              color = "blue", fillColor = "grey", weight = 2, opacity = 1
+            )
+        }
+        
+        if (length(lng_poly) != 0 && length(lng_ans_obj) != 0) {
+          map_shown <- leaflet() %>%
+            addTiles() %>%
+            addMarkers(
+              lng = tail(unlist(lng_ans_obj), 1),
+              lat = tail(unlist(lat_ans_obj), 1),
+              icon = loc_marker
+            ) %>%
+            addPolygons(
+              lng = unlist(lng_poly),
+              lat = unlist(lat_poly),
+              color = "blue", fillColor = "grey", weight = 2, opacity = 1
+            )
+        }
+        
+        # Add overlay with zIndex control
+        map_shown %>%
+          htmlwidgets::onRender("
+              function(el, x, data) {
+                var map = this;
+                var task_number = data.task_number;
+                var virEnvName = data.virEnvName;
+                var virEnvLayer = data.virEnvLayer;
+
+                // console.log('task_number from R:', task_number);
+                // console.log('virEnvName from R:', virEnvName);
+                // console.log('virEnvLayer from R:', virEnvLayer);
+
+                // Set min and max zoom levels
+                map.options.minZoom = 17;
+                map.options.maxZoom = 20;
+                map.on('zoomend', function() {
+                  console.log('Current zoom level:', map.getZoom());
+                });
+                  
+                // Define imageUrl variable
+                var imageUrl;
+                if (virEnvName !== null && virEnvName !== undefined && virEnvName !== 'NA') {
+                  imageUrl = 'assets/vir_envs_layers/' + virEnvLayer + '.png';
+                } else {
+                  imageUrl = 'assets/vir_envs_layers/VirEnv_1.png';
+                }
+
+                // ########################
+                // overlayCoords: 4 corners of where the image should appear
+                var overlayCoords = data.virEnvsProperties[virEnvName].overlayCoords;
+
+                // Compute SW/NE bounds from overlayCoords
+                var lats = overlayCoords.map(c => c[0]);
+                var lngs = overlayCoords.map(c => c[1]);
+                var sw = [Math.min(...lats), Math.min(...lngs)];
+                var ne = [Math.max(...lats), Math.max(...lngs)];
+
+                // ########################
+                // bounds: constrain map panning/zooming to these bounds
+                var mapBounds = data.virEnvsProperties[virEnvName].bounds;
+
+                // Add image overlay
+                var overlay = L.imageOverlay(imageUrl, [sw, ne], { zIndex: 10 }).addTo(this);
+
+                // Constrain map to bounds
+                this.setMaxBounds(mapBounds);
+
+                // Fit map view to overlay
+                this.fitBounds([sw, ne]);
+                }
+            ", data = list(task_number = num_value_num(),
+                           virEnvName = virEnvNames[num_value_num()],
+                           virEnvLayer = virEnvLayers[num_value_num()],
+                           virEnvsProperties = virEnvsProperties)
+          )
       }
-      if (t == "nav-arrow") {
-        t <- "Navigation with arrow"
+      
+      # Store in reactive value
+      map_rv(map_virtual)
+      
+      # output$map <- renderLeaflet({
+      #   req(map_rv())
+      #   map_rv()
+      # })
+      
+      # Convert abbreviation for type task
+      if (!is.na(t)) {
+        if (t == "nav-flag") {
+          t <- "Navigation to flag"
+        }
+        if (t == "nav-arrow") {
+          t <- "Navigation with arrow"
+        }
+        if (t == "nav-photo") {
+          t <- "Navigation via photo"
+        }
+        if (t == "nav-text") {
+          t <- "Navigation via text"
+        }
+        if (t == "theme-loc") {
+          t <- "Self location"
+        }
+        if (t == "theme-object") {
+          t <- "Object location"
+        }
+        if (t == "theme-direction") {
+          t <- "Direction determination"
+        }
+        if (t == "free") {
+          t <- "Free"
+        }
+        if (t == "info") {
+          t <- "Information"
+        }
+        if (t == "") {
+          t <- "No task exists with this number"
+        }
       }
-      if (t == "nav-photo") {
-        t <- "Navigation via photo"
-      }
-      if (t == "nav-text") {
-        t <- "Navigation via text"
-      }
-      if (t == "theme-loc") {
-        t <- "Self location"
-      }
-      if (t == "theme-object") {
-        t <- "Object location"
-      }
-      if (t == "theme-direction") {
-        t <- "Direction determination"
-      }
-      if (t == "free") {
-        t <- "Free"
-      }
-      if (t == "info") {
-        t <- "Information"
-      }
-      if (t == "") {
-        t <- "No task exists with this number"
-      }
+      
+      output$mapLegend <- renderText({paste("Task type:",t)})
     }
-    
-    output$mapLegend <- renderText({paste("Task type:",t)})
-    
-    #Download map
-    output$downloadMap <- downloadHandler(
-      filename = function() {
-        paste("map_", Sys.Date(), ".html", sep="")
-      },
-      content = function(file) {
-        m <- saveWidget(map_shown, file = file, selfcontained = TRUE)
-      }
-    )
-    
-    
-    #photo code starts---------------------
+      #Download map
+      # output$downloadMap <- downloadHandler(
+      #   filename = function() {
+      #     paste("map_", Sys.Date(), ".html", sep="")
+      #   },
+      #   content = function(file) {
+      #     m <- saveWidget(map_shown, file = file, selfcontained = TRUE)
+      #   }
+      # )
+      # 
+      
+      #photo code starts---------------------
     cou <- 1 #counter
     pict <- list()
     ans_photo <- list()
@@ -3197,8 +3565,67 @@ server <- function(input, output, session) {
     }
   })
   
+  output$map <- renderLeaflet({
+    req(map_rv())
+    map_rv()
+  })
   
+  # Single download handler for maps (works for real + virtual env)
+  # output$downloadMap <- downloadHandler(
+  #   filename = function() {
+  #     paste0("map_", Sys.Date(), ".html")
+  #   },
+  #   content = function(file) {
+  #     req(map_rv())
+  #     htmlwidgets::saveWidget(map_rv(), file = file, selfcontained = TRUE)
+  #   }
+  # )
   
+  output$downloadMap <- downloadHandler(
+    filename = function() {
+      paste0("map_", Sys.Date(), ".zip")
+    },
+    content = function(file) {
+      req(map_rv())
+
+      # Temp dir for export
+      tmpdir <- tempfile("map_export_")
+      dir.create(tmpdir)
+
+      # have Saved widget
+      htmlfile <- file.path(tmpdir, "map.html")
+      htmlwidgets::saveWidget(
+        widget = map_rv(),
+        file   = htmlfile,
+        selfcontained = FALSE
+      )
+      # At this point tmpdir contains:
+      #   - map.html
+      #   - map_files/   (Leaflet JS/CSS etc.)
+
+      #Copied virtual-environment images into assets/vir_envs_layers
+      from_dir <- file.path(getwd(), "www", "assets", "vir_envs_layers")
+      to_dir   <- file.path(tmpdir, "assets", "vir_envs_layers")
+      dir.create(to_dir, recursive = TRUE, showWarnings = FALSE)
+
+      if (dir.exists(from_dir)) {
+        file.copy(
+          from = list.files(from_dir, full.names = TRUE),
+          to   = to_dir,
+          recursive = TRUE
+        )
+      }
+
+      # Zipped EVERYTHING in tmpdir (html + *_files + assets)
+      oldwd <- getwd()
+      setwd(tmpdir)
+      zip::zipr(
+        zipfile = file,
+        files   = list.files()  # "map.html", "map_files", "assets", …
+      )
+      setwd(oldwd)
+    }
+  )
   
   
 }
