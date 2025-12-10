@@ -1177,10 +1177,47 @@ server <- function(input, output, session) {
         if ((type_task[i] == "theme-loc") && (cou == num_value_num())) { #Always having the task type shown for theme-localisation
           t <- type_task[i]
         }
-        if ((type_task[i] == "theme-direction" || (type_task[i] == "theme-object" && ans_type[[i]] == "PHOTO") || (type_task[i] == "theme-object" && length(data[[1]]$events$task$question$mode) != 0 && data[[1]]$events$task$question$mode[[i]] == "NO_FEATURE")) && cou == num_value_num()) { #tasks that show nothing on the map
+        
+        # #########-DOMINIKA'S game issue solved ######################################
+        # safe single values for this event i
+        # safe access
+        # safe access
+        mode_vec <- data[[1]]$events$task$question$mode
+        
+        mode_i <- if (!is.null(mode_vec) && length(mode_vec) >= i) mode_vec[[i]] else NA_character_
+        ans_i  <- if (!is.null(ans_type) && length(ans_type) >= i) ans_type[[i]] else NA_character_
+        
+        is_theme_direction <-
+          !is.na(type_task[i]) && type_task[i] == "theme-direction"
+        
+        is_theme_object_photo <-
+          !is.na(type_task[i]) && type_task[i] == "theme-object" &&
+          !is.na(ans_i)        && ans_i == "PHOTO"
+        
+        is_theme_object_nofeature <-
+          !is.na(type_task[i]) && type_task[i] == "theme-object" &&
+          !is.na(mode_i)       && mode_i == "NO_FEATURE"
+        
+        if ((is_theme_direction ||
+             is_theme_object_photo ||
+             is_theme_object_nofeature) &&
+            cou == num_value_num()) {
+          
           mr <- TRUE
-          t <- type_task[i]
+          t  <- type_task[i]
         }
+        
+        # #########-DOMINIKA'S game issue solved ######################################
+        
+        
+        
+        # if ((type_task[i] == "theme-direction" || (type_task[i] == "theme-object" && ans_type[[i]] == "PHOTO") || (type_task[i] == "theme-object" && length(data[[1]]$events$task$question$mode) != 0 && data[[1]]$events$task$question$mode[[i]] == "NO_FEATURE")) && cou == num_value_num()) { #tasks that show nothing on the map
+        #   mr <- TRUE
+        #   t <- type_task[i]
+        # }
+
+        
+        
         if (type_task[i] == "theme-object" && cou == num_value_num() && ans_type[[i]] == "MAP_POINT") { #tasks that show nothing on the map
           poly <- sel_polygon[[i]]$geometry$coordinates[[1]]
           for (n in 1:(length(poly)/2)) {
@@ -2680,10 +2717,50 @@ server <- function(input, output, session) {
         if ((type_task[i] == "theme-loc") && (cou == num_value_num())) { #Always having the task type shown for theme-localisation
           t <- type_task[i]
         }
-        if ((type_task[i] == "theme-direction" || (type_task[i] == "theme-object" && ans_type[[i]] == "PHOTO") || (type_task[i] == "theme-object" && length(data[[1]]$events$task$question$mode) != 0 && data[[1]]$events$task$question$mode[[i]] == "NO_FEATURE")) && cou == num_value_num()) { #tasks that show nothing on the map
+        
+        #########-DOMINIKA'S game issue solved ######################################
+        # safe single values for this event i
+        # safe access
+        mode_vec <- data[[1]]$events$task$question$mode
+        
+        mode_i <- if (!is.null(mode_vec) && length(mode_vec) >= i) mode_vec[[i]] else NA_character_
+        ans_i  <- if (!is.null(ans_type) && length(ans_type) >= i) ans_type[[i]] else NA_character_
+        
+        is_theme_direction <-
+          !is.na(type_task[i]) && type_task[i] == "theme-direction"
+        
+        is_theme_object_photo <-
+          !is.na(type_task[i]) && type_task[i] == "theme-object" &&
+          !is.na(ans_i)        && ans_i == "PHOTO"
+        
+        is_theme_object_nofeature <-
+          !is.na(type_task[i]) && type_task[i] == "theme-object" &&
+          !is.na(mode_i)       && mode_i == "NO_FEATURE"
+        
+        if ((is_theme_direction ||
+             is_theme_object_photo ||
+             is_theme_object_nofeature) &&
+            cou == num_value_num()) {
+          
           mr <- TRUE
-          t <- type_task[i]
+          t  <- type_task[i]
         }
+        
+        
+        #########-DOMINIKA'S game issue solved ######################################
+        
+        
+        
+        
+        
+        
+        # if ((type_task[i] == "theme-direction" || (type_task[i] == "theme-object" && ans_type[[i]] == "PHOTO") || (type_task[i] == "theme-object" && length(data[[1]]$events$task$question$mode) != 0 && data[[1]]$events$task$question$mode[[i]] == "NO_FEATURE")) && cou == num_value_num()) { #tasks that show nothing on the map
+        #   mr <- TRUE
+        #   t <- type_task[i]
+        # }
+
+        
+        
         if (type_task[i] == "theme-object" && cou == num_value_num() && ans_type[[i]] == "MAP_POINT") { #tasks that show nothing on the map
           poly <- sel_polygon[[i]]$geometry$coordinates[[1]]
           for (n in 1:(length(poly)/2)) {
