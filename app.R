@@ -2079,36 +2079,30 @@ server <- function(input, output, session) {
         if ((!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
           if (length(data2[[i]]$events$answer$correct[j]) != 0) {
             ans2 <- append(ans2, data2[[i]]$events$answer$correct[j])
-          }
-          else {
+          } else {
             ans2 <- append(ans2, data2[[i]]$events$correct[j])
           }
           typ2 <- append(typ2, data2[[i]]$events$task$type[j])
           
+          # distance in meters
           dist1_m_new <- append(dist1_m_new, data2[[i]]$events$answer$distance[j])
-          if (length(data2[[i]]$events$task$question$direction$bearing) != 0) { #Two different ways in the JSON for theme-direction
-            if (length(data2[[i]]$events$answer$clickDirection) != 0 && !is.na(data2[[i]]$events$answer$clickDirection[j])) {
-              dist1_deg_new <- append(dist1_deg_new, data2[[i]]$events$answer$clickDirection[j])
-              dist2_deg_new <- append(dist2_deg_new, data2[[i]]$events$compassHeading[j])
-            }
-            else {
-              dist1_deg_new <- append(dist1_deg_new, data2[[i]]$events$answer$compassHeading[j])
-              dist2_deg_new <- append(dist2_deg_new, data2[[i]]$events$task$question$direction$bearing[j])
-            }
-          }
-          else {
-            dist1_deg_new <- append(dist1_deg_new, NA)
-            dist2_deg_new <- append(dist2_deg_new, NA)
-          }
           
-          time2 <- as.POSIXct(tps[j], format = "%Y-%m-%dT%H:%M:%OS",tz = "UTC")
+          # bearings: use shared helpers
+          ans_bearing <- get_answer_bearing(j, data2[[i]]$events)
+          cor_bearing <- get_correct_bearing(j, data2[[i]]$events)
+          
+          dist1_deg_new <- append(dist1_deg_new, ans_bearing)
+          dist2_deg_new <- append(dist2_deg_new, cor_bearing)
+          
+          time2 <- as.POSIXct(tps[j], format = "%Y-%m-%dT%H:%M:%OS", tz = "UTC")
           tmp2 <- append(tmp2, floor(as.numeric(time2 - time1, units = "secs")))
-          time1 <- as.POSIXct(tps[j+1], format = "%Y-%m-%dT%H:%M:%OS",tz = "UTC")
+          time1 <- as.POSIXct(tps[j+1], format = "%Y-%m-%dT%H:%M:%OS", tz = "UTC")
           
           try2 <- append(try2, tries)
           tries = 0
         }
       }
+      
       
       
       for (k in 1:length(ans2)) {
