@@ -472,7 +472,7 @@ server <- function(input, output, session) {
   choices_rv <- reactiveVal() #FOR ENSURING THAT RIGHT NAME IS REFLECTED IN SELECTIZEINPUT INSTEAD OF MONGO DB IDs
   
   
-  apiURL_rv <- reactiveVal("https://api.geogami.ifgi.de")
+  apiURL_rv <- reactiveVal("https://api.geogami.uni-muenster.de")
   
   # Observe the URL query string for the token parameter
   observe({
