@@ -1854,7 +1854,7 @@ server <- function(input, output, session) {
       
       # Store in reactive value
       map_rv(map_virtual)
-      
+    }
       # output$map <- renderLeaflet({
       #   req(map_rv())
       #   map_rv()
@@ -2013,7 +2013,7 @@ server <- function(input, output, session) {
       }
       
       #photo code ends here-----------------------------------
-    }
+    
   })
   
   #####End of big table
