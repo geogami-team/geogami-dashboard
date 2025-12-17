@@ -492,81 +492,59 @@ server <- function(input, output, session) {
     paste("Current theme is:", input$theme)
   })
   
-  # observe({
-  #   ## 1. Load list of user games / games that user has access to their tracks
-  #   # Define the API URL and token
-  #   apiUrl <- paste0(apiURL_rv(), "/game/usergames")
-  #   games_data <- fetch_games_data_from_server(apiUrl, accessToken_rv())
-  #   games_name <- games_data$name
-  #   if (is.null(games_data)) {
-  #     games_name <- character(0)
-  #     games_id <- character(0)
-  #   } else {
-  #     games_name <- games_data$name
-  #     games_id <- games_data[["_id"]]
-  #   }
-  # 
-  #   ### 2. Populate select input for games
-  #   mapping <- setNames(games_id, games_name)
-  #   games_choices_rv(mapping)  #MADE THIS CHANGE FOR CREATING ZIP FILE NAME (download button issue) AS PER THE GAME LOADED
-  #   updatePickerInput(session, "selected_games",
-  #                     choices = mapping)
-  # 
-  #   output$info_download <- renderText({
-  #     ""
-  #   })
-  # })
+  #############---------------LOADING GAMES start (NEWEST ON TOP)-----################
+  mongo_objectid_time <- function(id) {
+    id <- as.character(id)
+    ts_hex <- substr(id, 1, 8)
+    as.POSIXct(strtoi(ts_hex, base = 16L), origin = "1970-01-01", tz = "UTC")
+  }
+  
   
   observe({
-    ## 1. Load list of user games / games that user has access to their tracks
-    # Define the API URL and token
+    req(accessToken_rv())
+    req(apiURL_rv())
+    
     apiUrl <- paste0(apiURL_rv(), "/game/usergames")
     games_data <- fetch_games_data_from_server(apiUrl, accessToken_rv())
-
-    # Default empty
-    games_name <- character(0)
-    games_id   <- character(0)
-
-    if (!is.null(games_data) && nrow(games_data) > 0) {
-      # --- sort games by createdAt (newest first) ---
-      if (!is.null(games_data$createdAt)) {
-        ord <- order(games_data$createdAt, decreasing = TRUE)
-        games_data <- games_data[ord, , drop = FALSE]
-      }
-
-      games_name <- games_data$name
-      games_id   <- games_data[["_id"]]
+    
+    if (is.null(games_data) || NROW(games_data) == 0) {
+      games_choices_rv(setNames(character(0), character(0)))
+      updatePickerInput(session, "selected_games", choices = character(0), selected = character(0))
+      output$info_download <- renderText({ "" })
+      return()
     }
-
-    ### 2. Populated select input for games
-    mapping <- setNames(games_id, games_name)
-    games_choices_rv(mapping)  # used later e.g. for ZIP filename
-
-    updatePickerInput(
-      session, "selected_games",
-      choices = mapping
-    )
-
+    
+    games_df <- as.data.frame(games_data, stringsAsFactors = FALSE)
+    
+    # --- NEW: derive created time from Mongo _id and sort newest first ---
+    if ("_id" %in% names(games_df)) {
+      games_df$created_dt <- mongo_objectid_time(games_df[["_id"]])
+      games_df <- games_df[order(games_df$created_dt, decreasing = TRUE), , drop = FALSE]
+    }
+    
+    # Build picker choices (label=name, value=id) in this sorted order
+    mapping <- setNames(games_df[["_id"]], games_df$name)
+    games_choices_rv(mapping)
+    
+    # Optional: force newest as default if you want
+    # selected_val <- games_df[["_id"]][1]
+    # Otherwise: preserve current selection if still valid
+    cur <- isolate(input$selected_games)
+    selected_val <- if (!is.null(cur) && cur %in% mapping) cur else games_df[["_id"]][1]
+    
+    updatePickerInput(session, "selected_games", choices = mapping, selected = selected_val)
+    
+    # Debug print to confirm ordering
+    message("=== Games (newest -> oldest) ===")
+    print(games_df[, c("name", "_id", "created_dt")], row.names = FALSE)
+    
     output$info_download <- renderText({ "" })
   })
   
+  #############---------------LOADING GAMES END (NEWEST ON TOP)-----################
   
   
-  
-  # ### 3. When a game is selected
-  # observeEvent(input$selected_games, {
-  #   game_id <- input$selected_games
-  #   
-  #   # update the API URL with the selected game ID
-  #   apiUrl <- paste0(apiURL_rv(), "/track/gametracks/", game_id)
-  #   
-  #   # Fetch game's tracks data from API
-  #   # Note: The token is used for authentication, ensure it is valid
-  #   games_tracks <- fetch_games_data_from_server(apiUrl, accessToken_rv())
-  #   
-  #   # Store in reactive value
-  #   selected_game_tracks_rv(games_tracks)
-  # })
+
   
   observeEvent(input$selected_games, {
     game_id <- input$selected_games
@@ -981,10 +959,10 @@ server <- function(input, output, session) {
     ans <- list()
     
     # Extract reusable fields
-    csg <- data[[1]]$events$task$question$text
-    ev <- data[[1]]$events$type
+    csg <- data[[1]]$events$task$question$text   #assignment text 
+    ev <- data[[1]]$events$type                    # is used later to count tries - event type (INIT_TASK, ON_OK_CLICKED, ...)
     pict_quest <- data[[1]]$events$task$question$photo
-    ans_type <- data[[1]]$events$task$answer$type
+    ans_type <- data[[1]]$events$task$answer$type    #decides how to format the “Answer” column.
     
     for (j in seq_len(length(id) - 1)) {
       if ((!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
