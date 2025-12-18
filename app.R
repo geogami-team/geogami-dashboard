@@ -460,6 +460,59 @@ server <- function(input, output, session) {
   map_rv <- reactiveVal(NULL)
   
   
+  ####R helper function ##################
+  haversine_m <- function(lon1, lat1, lon2, lat2) {
+    R <- 6371000
+    toRad <- pi / 180
+    dlat <- (lat2 - lat1) * toRad
+    dlon <- (lon2 - lon1) * toRad
+    a <- sin(dlat/2)^2 + cos(lat1*toRad) * cos(lat2*toRad) * sin(dlon/2)^2
+    2 * R * asin(pmin(1, sqrt(a)))
+  }
+  
+  fix_vr_distance_tasks <- function(evts) {
+    # detect VR rows (virEnvType exists)
+    is_vr <- !is.null(evts$task$virEnvType) & !is.na(evts$task$virEnvType)
+    
+    # only tasks evaluated by distance to a point
+    is_dist_task <- !is.null(evts$task$evaluate) &
+      evts$task$evaluate == "distanceToPoint"
+    
+    # only evaluate on OK clicks
+    is_ok <- evts$type == "ON_OK_CLICKED"
+    
+    idx <- which(is_vr & is_dist_task & is_ok)
+    
+    if (!length(idx)) return(evts)
+    
+    for (j in idx) {
+      # target is usually already in events$answer$target at the OK event
+      targ <- try(evts$answer$target[[j]], silent = TRUE)
+      if (inherits(targ, "try-error") || length(targ) != 2) next
+      
+      lon_t <- as.numeric(targ[1]); lat_t <- as.numeric(targ[2])
+      
+      lon_p <- suppressWarnings(as.numeric(evts$position$coords$longitude[j]))
+      lat_p <- suppressWarnings(as.numeric(evts$position$coords$latitude[j]))
+      if (is.na(lon_p) || is.na(lat_p)) next
+      
+      d <- haversine_m(lon_p, lat_p, lon_t, lat_t)
+      
+      acc <- suppressWarnings(as.numeric(evts$task$settings$accuracy[j]))
+      if (is.na(acc)) acc <- 10  # fallback if missing
+      
+      evts$answer$distance[j] <- d
+      evts$answer$correct[j]  <- (d <= acc)
+      evts$correct[j]         <- (d <= acc)  # keep both consistent
+    }
+    
+    evts
+  }
+  ################################################ 
+  
+  
+  
+  
   # Store selected game track data reactively
   selected_game_tracks_rv <- reactiveVal()
   num_value_num <- reactive({ as.numeric(input$num_value) })
@@ -754,20 +807,49 @@ server <- function(input, output, session) {
   })
   
   ### 7. Reactive: load selected single file data
+  # loaded_json <- reactive({
+  #   req(input$selected_data_file)
+  #   selected <- input$selected_data_file
+  #   
+  #   lapply(selected, function(file) {
+  #     track_id <- input$selected_data_file
+  #     # Construct the API URL
+  #     url <- paste0(apiURL_rv(), "/track/", track_id)
+  #     # Fetch and return the JSON data from the server
+  #     track_data <- fetch_games_data_from_server(url, accessToken_rv())
+  #     track_data_rv(track_data)  # Store the data in reactive value
+  #     return(track_data)
+  #   })
+  # })
+  
   loaded_json <- reactive({
     req(input$selected_data_file)
-    selected <- input$selected_data_file
+    req(accessToken_rv())
+    req(apiURL_rv())
     
-    lapply(selected, function(file) {
-      track_id <- input$selected_data_file
-      # Construct the API URL
-      url <- paste0(apiURL_rv(), "/track/", track_id)
-      # Fetch and return the JSON data from the server
-      track_data <- fetch_games_data_from_server(url, accessToken_rv())
-      track_data_rv(track_data)  # Store the data in reactive value
-      return(track_data)
-    })
+    track_id <- input$selected_data_file[1]
+    url <- paste0(apiURL_rv(), "/track/", track_id)
+    
+    d <- fetch_games_data_from_server(url, accessToken_rv())
+    
+    shiny::validate(
+      shiny::need(!is.null(d), "No data returned for selected track.")
+    )
+    
+    # apply VR correction patch
+    if (!is.null(d$events)) {
+      d$events <- fix_vr_distance_tasks(d$events)
+    }
+    
+    track_data_rv(d)
+    list(d)
   })
+  
+  
+  
+  
+  
+  
   
   #Get the uploaded json file
   uploaded_json <- reactive({
@@ -775,9 +857,12 @@ server <- function(input, output, session) {
     datapaths <- input$uploaded_json_file$datapath
     
     lapply(datapaths, function(path) {
-      jsonlite::fromJSON(path)
+      d <- jsonlite::fromJSON(path)
+      if (!is.null(d$events)) d$events <- fix_vr_distance_tasks(d$events)
+      d
     })
   })
+  
   
   
   ### 8. Reactive: load multiple json files for comparison
@@ -790,9 +875,11 @@ server <- function(input, output, session) {
     # Fetching the data for each selected track
     data_list <- lapply(sel, function(track_id) {
       url <- paste0(apiURL_rv(), "/track/", track_id)
-      track_data <- fetch_games_data_from_server(url, accessToken_rv())
-      return(track_data)
+      d <- fetch_games_data_from_server(url, accessToken_rv())
+      if (!is.null(d$events)) d$events <- fix_vr_distance_tasks(d$events)
+      d
     })
+    
     
     # updating track_data_rv to hold a list of all
     track_data_rv(data_list)
