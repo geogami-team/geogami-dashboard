@@ -3067,6 +3067,9 @@ server <- function(input, output, session) {
     lng_ans_obj <- list()
     lat_ans_obj <- list()
     
+    dir_ok_idx <- NA_integer_
+    
+    
     #Recovering answers position for the map
     for (i in 1:(length(id)-1)) {
       if (!is.na(cat_task[i])) {
