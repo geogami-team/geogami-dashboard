@@ -438,31 +438,217 @@ ui <- page_sidebar(
 server <- function(input, output, session) {
   
   #####---------TYPE CONVERSION HELPER FUNCTIONS FOR VR HELEN'S Tasks - Start--------######
-  num <- function(x) suppressWarnings(as.numeric(x))
+  # num <- function(x) suppressWarnings(as.numeric(x))
+  # 
+  # get_correct_bearing <- function(j, evts) {
+  #   b1 <- try(evts$task$question$initialAvatarPosition$bearing[j], silent = TRUE)
+  #   if (!inherits(b1, "try-error") && length(b1) && !is.na(b1)) return(num(b1))
+  #   b2 <- try(evts$task$question$direction$bearing[j], silent = TRUE)
+  #   if (!inherits(b2, "try-error") && length(b2) && !is.na(b2)) return(num(b2))
+  #   b3 <- try(evts$compassHeading[j], silent = TRUE)
+  #   return(num(b3))
+  # }
+  # 
+  # get_answer_bearing <- function(j, evts) {
+  #   a1 <- try(evts$answer$clickDirection[j], silent = TRUE)
+  #   if (!inherits(a1, "try-error") && length(a1) && !is.na(a1)) return(num(a1))
+  #   a2 <- try(evts$answer$compassHeading[j], silent = TRUE)
+  #   return(num(a2))
+  # }
+  #####---------TYPE CONVERSION HELPER FUNCTIONS FOR VR HELEN'S Tasks - end--------######
+  
+  # robust numeric parse (handles "74,66778")
+  num <- function(x) {
+    if (is.null(x) || length(x) == 0) return(NA_real_)
+    if (is.list(x)) return(NA_real_)
+    if (is.character(x)) x <- gsub(",", ".", x, fixed = TRUE)
+    suppressWarnings(as.numeric(x))
+  }
+  
+  angle_diff_deg <- function(a, b) {
+    if (is.na(a) || is.na(b)) return(NA_real_)
+    d <- (a - b + 180) %% 360 - 180
+    abs(d)
+  }
   
   get_correct_bearing <- function(j, evts) {
-    b1 <- try(evts$task$question$initialAvatarPosition$bearing[j], silent = TRUE)
-    if (!inherits(b1, "try-error") && length(b1) && !is.na(b1)) return(num(b1))
+    eval <- try(evts$task$evaluate[j], silent = TRUE)
+    eval <- if (inherits(eval, "try-error")) NA else eval
+    
+    # IMPORTANT: evalDirection should use question$direction$bearing first
+    if (!is.na(eval) && eval == "evalDirection") {
+      b <- try(evts$task$question$direction$bearing[j], silent = TRUE)
+      if (!inherits(b, "try-error") && length(b) && !is.na(b)) return(num(b))
+    }
+    
+    # evalMapDirection should use initialAvatarPosition$bearing
+    if (!is.na(eval) && eval == "evalMapDirection") {
+      b <- try(evts$task$question$initialAvatarPosition$bearing[j], silent = TRUE)
+      if (!inherits(b, "try-error") && length(b) && !is.na(b)) return(num(b))
+    }
+    
+    # fallback order
     b2 <- try(evts$task$question$direction$bearing[j], silent = TRUE)
     if (!inherits(b2, "try-error") && length(b2) && !is.na(b2)) return(num(b2))
+    
+    b1 <- try(evts$task$question$initialAvatarPosition$bearing[j], silent = TRUE)
+    if (!inherits(b1, "try-error") && length(b1) && !is.na(b1)) return(num(b1))
+    
     b3 <- try(evts$compassHeading[j], silent = TRUE)
-    return(num(b3))
+    num(b3)
   }
   
   get_answer_bearing <- function(j, evts) {
+    eval <- try(evts$task$evaluate[j], silent = TRUE)
+    eval <- if (inherits(eval, "try-error")) NA else eval
+    
+    # For evalDirection, answer is compassHeading
+    if (!is.na(eval) && eval == "evalDirection") {
+      a <- try(evts$answer$compassHeading[j], silent = TRUE)
+      return(num(a))
+    }
+    
+    # For evalMapDirection, answer is clickDirection
     a1 <- try(evts$answer$clickDirection[j], silent = TRUE)
     if (!inherits(a1, "try-error") && length(a1) && !is.na(a1)) return(num(a1))
+    
+    # fallback
     a2 <- try(evts$answer$compassHeading[j], silent = TRUE)
-    return(num(a2))
+    num(a2)
   }
-  #####---------TYPE CONVERSION HELPER FUNCTIONS FOR VR HELEN'S Tasks - end--------######
+  
+  
+  
+  
+  
   
   map_rv <- reactiveVal(NULL)
   
   
+  ####R helper function ##################
+  haversine_m <- function(lon1, lat1, lon2, lat2) {
+    R <- 6371000
+    toRad <- pi / 180
+    dlat <- (lat2 - lat1) * toRad
+    dlon <- (lon2 - lon1) * toRad
+    a <- sin(dlat/2)^2 + cos(lat1*toRad) * cos(lat2*toRad) * sin(dlon/2)^2
+    2 * R * asin(pmin(1, sqrt(a)))
+  }
+  
+  fix_vr_distance_tasks <- function(evts) {
+    # detect VR rows (virEnvType exists)
+    is_vr <- !is.null(evts$task$virEnvType) & !is.na(evts$task$virEnvType)
+    
+    # only tasks evaluated by distance to a point
+    is_dist_task <- !is.null(evts$task$evaluate) &
+      evts$task$evaluate == "distanceToPoint"
+    
+    # only evaluate on OK clicks
+    is_ok <- evts$type == "ON_OK_CLICKED"
+    
+    idx <- which(is_vr & is_dist_task & is_ok)
+    
+    if (!length(idx)) return(evts)
+    
+    for (j in idx) {
+      # target is usually already in events$answer$target at the OK event
+      targ <- try(evts$answer$target[[j]], silent = TRUE)
+      if (inherits(targ, "try-error") || length(targ) != 2) next
+      
+      lon_t <- as.numeric(targ[1]); lat_t <- as.numeric(targ[2])
+      
+      lon_p <- suppressWarnings(as.numeric(evts$position$coords$longitude[j]))
+      lat_p <- suppressWarnings(as.numeric(evts$position$coords$latitude[j]))
+      if (is.na(lon_p) || is.na(lat_p)) next
+      
+      d <- haversine_m(lon_p, lat_p, lon_t, lat_t)
+      
+      acc <- suppressWarnings(as.numeric(evts$task$settings$accuracy[j]))
+      if (is.na(acc)) acc <- 10  # fallback if missing
+      
+      evts$answer$distance[j] <- d
+      evts$answer$correct[j]  <- (d <= acc)
+      evts$correct[j]         <- (d <= acc)  # keep both consistent
+    }
+    
+    evts
+  }
+  ################################################ 
+  
+  
+  
+  fix_direction_tasks <- function(evts) {
+    is_ok <- evts$type == "ON_OK_CLICKED"
+    eval <- evts$task$evaluate
+    
+    idx <- which(
+      is_ok &
+        !is.null(eval) &
+        (eval %in% c("evalMapDirection", "evalDirection"))
+    )
+    
+    if (!length(idx)) return(evts)
+    
+    for (j in idx) {
+      acc <- num(evts$task$settings$accuracy[j])
+      if (is.na(acc)) acc <- 10
+      
+      cor <- get_correct_bearing(j, evts)
+      ans <- get_answer_bearing(j, evts)
+      err <- angle_diff_deg(ans, cor)
+      
+      if (is.na(err)) next
+      
+      evts$answer$correct[j] <- (err <= acc)
+      evts$correct[j]        <- (err <= acc)
+    }
+    
+    evts
+  }
+  
+  
+  
+  
+  dest_point <- function(lon, lat, bearing_deg, dist_m) {
+    R <- 6371000
+    br <- bearing_deg * pi/180
+    lat1 <- lat * pi/180
+    lon1 <- lon * pi/180
+    
+    lat2 <- asin(sin(lat1) * cos(dist_m/R) + cos(lat1) * sin(dist_m/R) * cos(br))
+    lon2 <- lon1 + atan2(sin(br) * sin(dist_m/R) * cos(lat1),
+                         cos(dist_m/R) - sin(lat1) * sin(lat2))
+    
+    c(lon2 * 180/pi, lat2 * 180/pi)
+  }
+  
+  arrow_lines <- function(lon, lat, bearing, len_m = 25, head_m = 7, head_ang = 25) {
+    end <- dest_point(lon, lat, bearing, len_m)
+    left  <- dest_point(end[1], end[2], bearing + 180 - head_ang, head_m)
+    right <- dest_point(end[1], end[2], bearing + 180 + head_ang, head_m)
+    
+    list(
+      main  = data.frame(lng = c(lon, end[1]),   lat = c(lat, end[2])),
+      left  = data.frame(lng = c(end[1], left[1]),  lat = c(end[2], left[2])),
+      right = data.frame(lng = c(end[1], right[1]), lat = c(end[2], right[2]))
+    )
+  }
+  
+  
+  angle_diff_deg_vec <- function(a, b) {
+    d <- (a - b + 180) %% 360 - 180
+    abs(d)
+  }
+  
+  
+  
   # Store selected game track data reactively
   selected_game_tracks_rv <- reactiveVal()
-  num_value_num <- reactive({ as.numeric(input$num_value) })
+  
+  num_value_num <- reactive({
+    suppressWarnings(as.integer(input$num_value))
+  })
+  
   
   games_choices_rv <- reactiveVal()   # store mapping of game_id -> game_name (CREATING THIS FOR zip file that gets downloaded, this is used for giving the right name to the zip file that gets downloaded)
   # Store access token reactively
@@ -754,20 +940,50 @@ server <- function(input, output, session) {
   })
   
   ### 7. Reactive: load selected single file data
+  # loaded_json <- reactive({
+  #   req(input$selected_data_file)
+  #   selected <- input$selected_data_file
+  #   
+  #   lapply(selected, function(file) {
+  #     track_id <- input$selected_data_file
+  #     # Construct the API URL
+  #     url <- paste0(apiURL_rv(), "/track/", track_id)
+  #     # Fetch and return the JSON data from the server
+  #     track_data <- fetch_games_data_from_server(url, accessToken_rv())
+  #     track_data_rv(track_data)  # Store the data in reactive value
+  #     return(track_data)
+  #   })
+  # })
+  
   loaded_json <- reactive({
     req(input$selected_data_file)
-    selected <- input$selected_data_file
+    req(accessToken_rv())
+    req(apiURL_rv())
     
-    lapply(selected, function(file) {
-      track_id <- input$selected_data_file
-      # Construct the API URL
-      url <- paste0(apiURL_rv(), "/track/", track_id)
-      # Fetch and return the JSON data from the server
-      track_data <- fetch_games_data_from_server(url, accessToken_rv())
-      track_data_rv(track_data)  # Store the data in reactive value
-      return(track_data)
-    })
+    track_id <- input$selected_data_file[1]
+    url <- paste0(apiURL_rv(), "/track/", track_id)
+    
+    d <- fetch_games_data_from_server(url, accessToken_rv())
+    
+    shiny::validate(
+      shiny::need(!is.null(d), "No data returned for selected track.")
+    )
+    
+    # apply VR correction patch
+    if (!is.null(d$events)) {
+      d$events <- fix_vr_distance_tasks(d$events)
+      d$events <- fix_direction_tasks(d$events)
+    }
+    
+    track_data_rv(d)
+    list(d)
   })
+  
+  
+  
+  
+  
+  
   
   #Get the uploaded json file
   uploaded_json <- reactive({
@@ -775,9 +991,15 @@ server <- function(input, output, session) {
     datapaths <- input$uploaded_json_file$datapath
     
     lapply(datapaths, function(path) {
-      jsonlite::fromJSON(path)
+      d <- jsonlite::fromJSON(path)
+      if (!is.null(d$events)) {
+        d$events <- fix_vr_distance_tasks(d$events)
+        d$events <- fix_direction_tasks(d$events)
+      }
+      d
     })
   })
+  
   
   
   ### 8. Reactive: load multiple json files for comparison
@@ -790,9 +1012,14 @@ server <- function(input, output, session) {
     # Fetching the data for each selected track
     data_list <- lapply(sel, function(track_id) {
       url <- paste0(apiURL_rv(), "/track/", track_id)
-      track_data <- fetch_games_data_from_server(url, accessToken_rv())
-      return(track_data)
+      d <- fetch_games_data_from_server(url, accessToken_rv())
+      if (!is.null(d$events)) {
+        d$events <- fix_vr_distance_tasks(d$events)
+        d$events <- fix_direction_tasks(d$events)
+      }
+      d
     })
+    
     
     # updating track_data_rv to hold a list of all
     track_data_rv(data_list)
@@ -1023,46 +1250,85 @@ server <- function(input, output, session) {
     }
     
     
-    num <- function(x) suppressWarnings(as.numeric(x))
+    #num <- function(x) suppressWarnings(as.numeric(x))
     
-    d1m   <- num(unlist(dist1_m))
+    # d1m   <- num(unlist(dist1_m))
+    # d1deg <- num(unlist(dist1_deg))
+    # d2deg <- num(unlist(dist2_deg))
+    # 
+    # maxn <- max(length(d1m), length(d1deg), length(d2deg))
+    # length(d1m)   <- maxn
+    # length(d1deg) <- maxn
+    # length(d2deg) <- maxn
+    # 
+    # rds <- cbind(d1m, dist_deg = angle_diff_deg_vec(d1deg, d2deg))
+    # #print(rds)
+    # 
+    # #print(rds)
+    # 
+    # ####sometimes we don't need to merge the column
+    # if (ncol(rds) == 2) {
+    #   rds[is.na(rds)] <- 0
+    #   dist <- c(rds[,1]+rds[,2])
+    #   dist[dist == 0] <- NA
+    # }
+    # else {
+    #   dist <- rds
+    # }
+    # 
+    # if (length(dist) != 0) {
+    #   dist <- round(dist,2)
+    # }
+    # 
+    # #Add unities on the last column
+    # for (i in 1:length(typ)) {
+    #   if (!is.na(typ[[i]]) && !is.na(dist[[i]]) && typ[[i]] == "theme-direction"){
+    #     dist[[i]] <- paste(dist[[i]], "°")
+    #   }
+    #   if (!is.na(typ[[i]]) && !is.na(dist[[i]]) && (typ[[i]] == "nav-flag" || typ[[i]] == "theme-loc")) {
+    #     dist[[i]] <- paste(dist[[i]], "m")
+    #   }
+    # }
+    # #print(dist)
+    
+    
+    # after you build typ, and dist1_m/dist1_deg/dist2_deg
+    
+    task_type <- as.character(unlist(typ))
+    n <- length(task_type)
+    
+    d1m   <- suppressWarnings(as.numeric(unlist(dist1_m)))
     d1deg <- num(unlist(dist1_deg))
     d2deg <- num(unlist(dist2_deg))
     
-    maxn <- max(length(d1m), length(d1deg), length(d2deg))
-    length(d1m)   <- maxn
-    length(d1deg) <- maxn
-    length(d2deg) <- maxn
+    length(d1m)   <- n
+    length(d1deg) <- n
+    length(d2deg) <- n
     
-    rds <- cbind(d1m, dist_deg = abs(d2deg - d1deg))
-    #print(rds)
+    deg_err <- angle_diff_deg_vec(d1deg, d2deg)
     
-    #print(rds)
+    # logical masks (TRUE/FALSE length n)
+    mask_dir <- !is.na(task_type) & task_type == "theme-direction"
+    mask_m   <- !is.na(task_type) & task_type %in% c("nav-flag", "theme-loc")
     
-    ####sometimes we don't need to merge the column
-    if (ncol(rds) == 2) {
-      rds[is.na(rds)] <- 0
-      dist <- c(rds[,1]+rds[,2])
-      dist[dist == 0] <- NA
-    }
-    else {
-      dist <- rds
-    }
+    dist_num <- rep(NA_real_, n)
+    dist_num[mask_dir] <- deg_err[mask_dir]
+    dist_num[mask_m]   <- d1m[mask_m]
     
-    if (length(dist) != 0) {
-      dist <- round(dist,2)
-    }
+    dist_num <- round(dist_num, 2)
     
-    #Add unities on the last column
-    for (i in 1:length(typ)) {
-      if (!is.na(typ[[i]]) && !is.na(dist[[i]]) && typ[[i]] == "theme-direction"){
-        dist[[i]] <- paste(dist[[i]], "°")
-      }
-      if (!is.na(typ[[i]]) && !is.na(dist[[i]]) && (typ[[i]] == "nav-flag" || typ[[i]] == "theme-loc")) {
-        dist[[i]] <- paste(dist[[i]], "m")
-      }
-    }
-    #print(dist)
+    dist_txt <- rep(NA_character_, n)
+    dist_txt[mask_dir & !is.na(dist_num)] <- paste0(dist_num[mask_dir & !is.na(dist_num)], " °")
+    dist_txt[mask_m   & !is.na(dist_num)] <- paste0(dist_num[mask_m   & !is.na(dist_num)], " m")
+    
+    dist <- dist_txt
+    
+    
+    
+    
+    
+    
+    
     
     #Computing time spent on a task
     tps <- data[[1]]$events$timestamp
@@ -1129,6 +1395,10 @@ server <- function(input, output, session) {
     lng_ans_obj <- list()
     lat_ans_obj <- list()
     
+    
+    dir_ok_idx <- NA_integer_
+    
+    
     #Recovering answers position for the map
     for (i in 1:(length(id)-1)) {
       if (!is.na(cat_task[i])) {
@@ -1156,6 +1426,13 @@ server <- function(input, output, session) {
           t <- type_task[i]
         }
         
+        
+        if (type_task[i] == "theme-direction" && ev[i] == "ON_OK_CLICKED" && cou == num_value_num()) {
+          dir_ok_idx <- i
+          t <- type_task[i]
+        }
+        
+        
         # #########-DOMINIKA'S game issue solved ######################################
         # safe single values for this event i
         # safe access
@@ -1176,14 +1453,16 @@ server <- function(input, output, session) {
           !is.na(type_task[i]) && type_task[i] == "theme-object" &&
           !is.na(mode_i)       && mode_i == "NO_FEATURE"
         
-        if ((is_theme_direction ||
-             is_theme_object_photo ||
-             is_theme_object_nofeature) &&
-            cou == num_value_num()) {
-          
+        if ((is_theme_object_photo || is_theme_object_nofeature) && cou == num_value_num()) {
           mr <- TRUE
           t  <- type_task[i]
         }
+        
+        if (is_theme_direction && cou == num_value_num()) {
+          t <- type_task[i]
+          # DO NOT set mr <- TRUE
+        }
+        
         
         # #########-DOMINIKA'S game issue solved ######################################
         
@@ -1223,6 +1502,7 @@ server <- function(input, output, session) {
           mr <- TRUE
           t <- type_task[i]
         }
+        
       }
       if (is.na(type_task[i]) && (i != 1) && (cou == num_value_num())) { #na task
         mr <- TRUE
@@ -1536,6 +1816,43 @@ server <- function(input, output, session) {
     dr_point_lat <- safe_coords(dr_point_lat)
     
     
+    if (!is.na(dir_ok_idx) && t == "theme-direction") {
+      evts <- data[[1]]$events
+      
+      lon0 <- num(evts$position$coords$longitude[dir_ok_idx])
+      lat0 <- num(evts$position$coords$latitude[dir_ok_idx])
+      
+      ans_b <- get_answer_bearing(dir_ok_idx, evts)
+      cor_b <- get_correct_bearing(dir_ok_idx, evts)
+      
+      if (is.finite(lon0) && is.finite(lat0) && !is.na(ans_b)) {
+        A <- arrow_lines(lon0, lat0, ans_b)
+        
+        map_shown <- leaflet() %>%
+          addTiles() %>%
+          addMarkers(lng = lon0, lat = lat0, icon = loc_marker) %>%
+          addPolylines(lng = A$main$lng,  lat = A$main$lat) %>%
+          addPolylines(lng = A$left$lng,  lat = A$left$lat) %>%
+          addPolylines(lng = A$right$lng, lat = A$right$lat) %>%
+          setView(lng = lon0, lat = lat0, zoom = 19)
+        
+        # optional: draw correct direction (dashed)
+        if (!is.na(cor_b)) {
+          C <- arrow_lines(lon0, lat0, cor_b)
+          map_shown <- map_shown %>%
+            addPolylines(lng = C$main$lng,  lat = C$main$lat,  opacity = 0.6, dashArray = "5,5") %>%
+            addPolylines(lng = C$left$lng,  lat = C$left$lat,  opacity = 0.6, dashArray = "5,5") %>%
+            addPolylines(lng = C$right$lng, lat = C$right$lat, opacity = 0.6, dashArray = "5,5")
+        }
+        
+        mr <- FALSE
+      }
+    }
+    
+    
+    
+    
+    
     #Print map
     if (mr == TRUE || length(ans) <= num_value_num() || (length(lng_targ) == 0 && length(lng_true) == 0 && t == "theme-loc")
         || (length(long) == 0 && length(traj_lat) == 0 && (t == "nav-flag" || t == "nav-text" || t == "nav-arrow" || t == "nav-photo"))) {
@@ -1771,6 +2088,48 @@ server <- function(input, output, session) {
               color = "blue", fillColor = "grey", weight = 2, opacity = 1
             )
         }
+        
+        
+        if (!is.na(dir_ok_idx) && t == "theme-direction") {
+          evts <- data[[1]]$events
+          
+          lon0 <- num(evts$position$coords$longitude[dir_ok_idx])
+          lat0 <- num(evts$position$coords$latitude[dir_ok_idx])
+          
+          ans_b <- get_answer_bearing(dir_ok_idx, evts)   # player's FINAL answer
+          cor_b <- get_correct_bearing(dir_ok_idx, evts)  # correct direction
+          
+          if (is.finite(lon0) && is.finite(lat0) && !is.na(ans_b)) {
+            
+            # Make arrow smaller if you want
+            A <- arrow_lines(lon0, lat0, ans_b, len_m = 18, head_m = 5, head_ang = 25)
+            
+            map_shown <- map_shown %>%
+              addMarkers(lng = lon0, lat = lat0, icon = loc_marker) %>%
+              
+              # Player FINAL answer arrow (BLUE)
+              addPolylines(lng = A$main$lng,  lat = A$main$lat,  color = "blue",  weight = 4, opacity = 1) %>%
+              addPolylines(lng = A$left$lng,  lat = A$left$lat,  color = "blue",  weight = 4, opacity = 1) %>%
+              addPolylines(lng = A$right$lng, lat = A$right$lat, color = "blue",  weight = 4, opacity = 1)
+            
+            # Correct direction arrow (GREEN) - optional
+            # if (!is.na(cor_b)) {
+            #   C <- arrow_lines(lon0, lat0, cor_b, len_m = 18, head_m = 5, head_ang = 25)
+            #   
+            #   map_shown <- map_shown %>%
+            #     addPolylines(lng = C$main$lng,  lat = C$main$lat,  color = "green", weight = 4, opacity = 0.9) %>%
+            #     addPolylines(lng = C$left$lng,  lat = C$left$lat,  color = "green", weight = 4, opacity = 0.9) %>%
+            #     addPolylines(lng = C$right$lng, lat = C$right$lat, color = "green", weight = 4, opacity = 0.9)
+            # }
+            
+            mr <- FALSE
+          }
+        }
+        
+        
+        
+        
+        
         
         # Add overlay with zIndex control
         map_shown %>%
@@ -2176,7 +2535,8 @@ server <- function(input, output, session) {
       length(d1deg_new) <- maxn
       length(d2deg_new) <- maxn
       
-      deg_error <- abs(d2deg_new - d1deg_new)
+      deg_error <- angle_diff_deg_vec(d1deg_new, d2deg_new)
+      
       
       
       
@@ -2557,46 +2917,90 @@ server <- function(input, output, session) {
     }
     
     
-    num <- function(x) suppressWarnings(as.numeric(x))
+    #num <- function(x) suppressWarnings(as.numeric(x))
     
-    d1m   <- num(unlist(dist1_m))
+    # d1m   <- num(unlist(dist1_m))
+    # d1deg <- num(unlist(dist1_deg))
+    # d2deg <- num(unlist(dist2_deg))
+    # 
+    # maxn <- max(length(d1m), length(d1deg), length(d2deg))
+    # length(d1m)   <- maxn
+    # length(d1deg) <- maxn
+    # length(d2deg) <- maxn
+    # 
+    # rds <- cbind(d1m, dist_deg = angle_diff_deg_vec(d1deg, d2deg))
+    # #print(rds)
+    # 
+    # 
+    # 
+    # ####sometimes we don't need to merge the column
+    # if (ncol(rds) == 2) {
+    #   rds[is.na(rds)] <- 0
+    #   dist <- c(rds[,1]+rds[,2])
+    #   dist[dist == 0] <- NA
+    # }
+    # else {
+    #   dist <- rds
+    # }
+    # 
+    # if (length(dist) != 0) {
+    #   dist <- round(dist,2)
+    # }
+    # 
+    # #Add unities on the last column
+    # for (i in 1:length(typ)) {
+    #   if (!is.na(typ[[i]]) && !is.na(dist[[i]]) && typ[[i]] == "theme-direction"){
+    #     dist[[i]] <- paste(dist[[i]], "°")
+    #   }
+    #   if (!is.na(typ[[i]]) && !is.na(dist[[i]]) && (typ[[i]] == "nav-flag" || typ[[i]] == "theme-loc")) {
+    #     dist[[i]] <- paste(dist[[i]], "m")
+    #   }
+    # }
+    
+    task_type <- as.character(unlist(typ))
+    n <- length(task_type)
+    
+    d1m   <- suppressWarnings(as.numeric(unlist(dist1_m)))
     d1deg <- num(unlist(dist1_deg))
     d2deg <- num(unlist(dist2_deg))
     
-    maxn <- max(length(d1m), length(d1deg), length(d2deg))
-    length(d1m)   <- maxn
-    length(d1deg) <- maxn
-    length(d2deg) <- maxn
+    length(d1m)   <- n
+    length(d1deg) <- n
+    length(d2deg) <- n
     
-    rds <- cbind(d1m, dist_deg = abs(d2deg - d1deg))
-    #print(rds)
+    deg_err <- angle_diff_deg_vec(d1deg, d2deg)
+    
+    # logical masks (TRUE/FALSE length n)
+    mask_dir <- !is.na(task_type) & task_type == "theme-direction"
+    mask_m   <- !is.na(task_type) & task_type %in% c("nav-flag", "theme-loc")
+    
+    dist_num <- rep(NA_real_, n)
+    dist_num[mask_dir] <- deg_err[mask_dir]
+    dist_num[mask_m]   <- d1m[mask_m]
+    
+    dist_num <- round(dist_num, 2)
+    
+    dist_txt <- rep(NA_character_, n)
+    dist_txt[mask_dir & !is.na(dist_num)] <- paste0(dist_num[mask_dir & !is.na(dist_num)], " °")
+    dist_txt[mask_m   & !is.na(dist_num)] <- paste0(dist_num[mask_m   & !is.na(dist_num)], " m")
+    
+    dist <- dist_txt
     
     
     
-    ####sometimes we don't need to merge the column
-    if (ncol(rds) == 2) {
-      rds[is.na(rds)] <- 0
-      dist <- c(rds[,1]+rds[,2])
-      dist[dist == 0] <- NA
-    }
-    else {
-      dist <- rds
-    }
     
-    if (length(dist) != 0) {
-      dist <- round(dist,2)
-    }
     
-    #Add unities on the last column
-    for (i in 1:length(typ)) {
-      if (!is.na(typ[[i]]) && !is.na(dist[[i]]) && typ[[i]] == "theme-direction"){
-        dist[[i]] <- paste(dist[[i]], "°")
-      }
-      if (!is.na(typ[[i]]) && !is.na(dist[[i]]) && (typ[[i]] == "nav-flag" || typ[[i]] == "theme-loc")) {
-        dist[[i]] <- paste(dist[[i]], "m")
-      }
-    }
+    
+    
+    
+    
+    
     #print(dist)
+    
+    
+    
+    
+    
     
     #Computing time spent on a task
     tps <- data[[1]]$events$timestamp
@@ -2663,6 +3067,9 @@ server <- function(input, output, session) {
     lng_ans_obj <- list()
     lat_ans_obj <- list()
     
+    dir_ok_idx <- NA_integer_
+    
+    
     #Recovering answers position for the map
     for (i in 1:(length(id)-1)) {
       if (!is.na(cat_task[i])) {
@@ -2690,6 +3097,11 @@ server <- function(input, output, session) {
           t <- type_task[i]
         }
         
+        if (type_task[i] == "theme-direction" && ev[i] == "ON_OK_CLICKED" && cou == num_value_num()) {
+          dir_ok_idx <- i
+          t <- type_task[i]
+        }
+        
         #########-DOMINIKA'S game issue solved ######################################
         # safe single values for this event i
         # safe access
@@ -2709,14 +3121,16 @@ server <- function(input, output, session) {
           !is.na(type_task[i]) && type_task[i] == "theme-object" &&
           !is.na(mode_i)       && mode_i == "NO_FEATURE"
         
-        if ((is_theme_direction ||
-             is_theme_object_photo ||
-             is_theme_object_nofeature) &&
-            cou == num_value_num()) {
-          
+        if ((is_theme_object_photo || is_theme_object_nofeature) && cou == num_value_num()) {
           mr <- TRUE
           t  <- type_task[i]
         }
+        
+        if (is_theme_direction && cou == num_value_num()) {
+          t <- type_task[i]
+          # DO NOT set mr <- TRUE
+        }
+        
         
         
         #########-DOMINIKA'S game issue solved ######################################
@@ -3078,6 +3492,45 @@ server <- function(input, output, session) {
     dr_point_lng <- safe_coords(dr_point_lng)
     dr_point_lat <- safe_coords(dr_point_lat)
     
+    
+    
+    
+    
+    if (!is.na(dir_ok_idx) && t == "theme-direction") {
+      evts <- data[[1]]$events
+      lon0 <- num(evts$position$coords$longitude[dir_ok_idx])
+      lat0 <- num(evts$position$coords$latitude[dir_ok_idx])
+      
+      ans_b <- get_answer_bearing(dir_ok_idx, evts)
+      cor_b <- get_correct_bearing(dir_ok_idx, evts)
+      
+      if (is.finite(lon0) && is.finite(lat0) && !is.na(ans_b)) {
+        A <- arrow_lines(lon0, lat0, ans_b)
+        
+        map_shown <- leaflet() %>%
+          addTiles() %>%
+          addMarkers(lng = lon0, lat = lat0, icon = loc_marker) %>%
+          addPolylines(lng = A$main$lng,  lat = A$main$lat) %>%
+          addPolylines(lng = A$left$lng,  lat = A$left$lat) %>%
+          addPolylines(lng = A$right$lng, lat = A$right$lat) %>%
+          setView(lng = lon0, lat = lat0, zoom = 19)
+        
+        if (!is.na(cor_b)) {
+          C <- arrow_lines(lon0, lat0, cor_b)
+          map_shown <- map_shown %>%
+            addPolylines(lng = C$main$lng,  lat = C$main$lat,  opacity = 0.6, dashArray = "5,5") %>%
+            addPolylines(lng = C$left$lng,  lat = C$left$lat,  opacity = 0.6, dashArray = "5,5") %>%
+            addPolylines(lng = C$right$lng, lat = C$right$lat, opacity = 0.6, dashArray = "5,5")
+        }
+        
+        mr <- FALSE  # ensure fallback doesn't blank it
+      }
+    }
+    
+    
+    
+    
+    
     ###########-------------END : downloaded json files issue solved here : safely handled the empty df and NA values--- THIS SOLVED THE MAP RENDERING ISSUE FOR THEME OBJECTS##################
     
     #Print map
@@ -3313,6 +3766,46 @@ server <- function(input, output, session) {
               color = "blue", fillColor = "grey", weight = 2, opacity = 1
             )
         }
+        
+        if (!is.na(dir_ok_idx) && t == "theme-direction") {
+          evts <- data[[1]]$events
+          
+          lon0 <- num(evts$position$coords$longitude[dir_ok_idx])
+          lat0 <- num(evts$position$coords$latitude[dir_ok_idx])
+          
+          ans_b <- get_answer_bearing(dir_ok_idx, evts)   # player's FINAL answer
+          cor_b <- get_correct_bearing(dir_ok_idx, evts)  # correct direction
+          
+          if (is.finite(lon0) && is.finite(lat0) && !is.na(ans_b)) {
+            
+            # Make arrow smaller if you want
+            A <- arrow_lines(lon0, lat0, ans_b, len_m = 18, head_m = 5, head_ang = 25)
+            
+            map_shown <- map_shown %>%
+              addMarkers(lng = lon0, lat = lat0, icon = loc_marker) %>%
+              
+              # Player FINAL answer arrow (BLUE)
+              addPolylines(lng = A$main$lng,  lat = A$main$lat,  color = "blue",  weight = 4, opacity = 1) %>%
+              addPolylines(lng = A$left$lng,  lat = A$left$lat,  color = "blue",  weight = 4, opacity = 1) %>%
+              addPolylines(lng = A$right$lng, lat = A$right$lat, color = "blue",  weight = 4, opacity = 1)
+            
+            # Correct direction arrow (GREEN) - optional
+            # if (!is.na(cor_b)) {
+            #   C <- arrow_lines(lon0, lat0, cor_b, len_m = 18, head_m = 5, head_ang = 25)
+            #   
+            #   map_shown <- map_shown %>%
+            #     addPolylines(lng = C$main$lng,  lat = C$main$lat,  color = "green", weight = 4, opacity = 0.9) %>%
+            #     addPolylines(lng = C$left$lng,  lat = C$left$lat,  color = "green", weight = 4, opacity = 0.9) %>%
+            #     addPolylines(lng = C$right$lng, lat = C$right$lat, color = "green", weight = 4, opacity = 0.9)
+            # }
+            
+            mr <- FALSE
+          }
+        }
+        
+        
+        
+        
         
         # Add overlay with zIndex control
         map_shown %>%
