@@ -873,10 +873,27 @@ server <- function(input, output, session) {
       nav_reached <- (!is.na(task_cat) && task_cat == "nav" && any(evts$type[block] == "WAYPOINT_REACHED", na.rm=TRUE))
       
       status <- NA_character_
+      
       if (!is.na(correct)) {
         status <- if (isTRUE(correct)) "Correct" else "Incorrect"
+        
       } else if (!is.na(task_cat) && task_cat == "nav") {
-        status <- if (nav_reached) "Correct" else "Target not reached"
+        
+        # 1) Prefer waypoint reached if present (nav-flag usually)
+        if (isTRUE(nav_reached)) {
+          status <- "Correct"
+          
+        } else {
+          # 2) Big-table rule: for nav-arrow/nav-text/nav-photo, if task took >0s => treat as Correct
+          is_nav_guided <- !is.na(task_type) && task_type %in% c("nav-arrow", "nav-text", "nav-photo")
+          
+          if (is_nav_guided && !is.na(time_s) && time_s > 0) {
+            status  <- "Correct"
+            correct <- TRUE   # important: so Compare/Stats count it as Correct
+          } else {
+            status <- "Target not reached"
+          }
+        }
       }
       
       # answer display string (status + optional value)
@@ -2844,8 +2861,10 @@ server <- function(input, output, session) {
       time_txt <- if (is.na(row$time_s)) NA_character_ else paste0(row$time_s, " s")
       dist_txt <- if (is.na(row$dist_travel_m)) NA_character_ else paste0(round(row$dist_travel_m), " m")
       
-      dist_to_target_txt <- if (is.na(row$dist_to_target_m)) NA_character_
-      else paste0(round(row$dist_to_target_m), " m")
+      # Big-table style:
+      # - blank if Correct
+      # - else (distance - accuracy) with 15m fallback
+      dist_to_target_txt <- row$error_txt
       
       # Navigation-style table (also used in Statistics time-vs-distance)
       ngts <- rbind(ngts, data.frame(
@@ -2853,7 +2872,7 @@ server <- function(input, output, session) {
         Correct = ifelse(is.na(correct_txt), NA_character_, correct_txt),
         Time = time_txt,
         `Distance travelled` = dist_txt,
-        `Distance to target` = dist_to_target_txt,
+        `Error to target` = dist_to_target_txt,
         check.names = FALSE,
         stringsAsFactors = FALSE
       ))
