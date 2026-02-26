@@ -1852,35 +1852,74 @@ server <- function(input, output, session) {
     dr_point_lat <- safe_coords(dr_point_lat)
     
     
+    # if (!is.na(dir_ok_idx) && t == "theme-direction") {
+    #   evts <- data[[1]]$events
+    #   
+    #   lon0 <- num(evts$position$coords$longitude[dir_ok_idx])
+    #   lat0 <- num(evts$position$coords$latitude[dir_ok_idx])
+    #   
+    #   ans_b <- get_answer_bearing(dir_ok_idx, evts)
+    #   cor_b <- get_correct_bearing(dir_ok_idx, evts)
+    #   
+    #   if (is.finite(lon0) && is.finite(lat0) && !is.na(ans_b)) {
+    #     A <- arrow_lines(lon0, lat0, ans_b)
+    #     
+    #     map_shown <- leaflet() %>%
+    #       addTiles() %>%
+    #       addMarkers(lng = lon0, lat = lat0, icon = loc_marker) %>%
+    #       addPolylines(lng = A$main$lng,  lat = A$main$lat) %>%
+    #       addPolylines(lng = A$left$lng,  lat = A$left$lat) %>%
+    #       addPolylines(lng = A$right$lng, lat = A$right$lat) %>%
+    #       setView(lng = lon0, lat = lat0, zoom = 19)
+    #     
+    #     # optional: draw correct direction (dashed)
+    #     if (!is.na(cor_b)) {
+    #       C <- arrow_lines(lon0, lat0, cor_b)
+    #       map_shown <- map_shown %>%
+    #         addPolylines(lng = C$main$lng,  lat = C$main$lat,  opacity = 0.6, dashArray = "5,5") %>%
+    #         addPolylines(lng = C$left$lng,  lat = C$left$lat,  opacity = 0.6, dashArray = "5,5") %>%
+    #         addPolylines(lng = C$right$lng, lat = C$right$lat, opacity = 0.6, dashArray = "5,5")
+    #     }
+    #     
+    #     mr <- FALSE
+    #   }
+    # }
+    
+    
+    
+    
     if (!is.na(dir_ok_idx) && t == "theme-direction") {
       evts <- data[[1]]$events
-      
+
       lon0 <- num(evts$position$coords$longitude[dir_ok_idx])
       lat0 <- num(evts$position$coords$latitude[dir_ok_idx])
-      
+
       ans_b <- get_answer_bearing(dir_ok_idx, evts)
       cor_b <- get_correct_bearing(dir_ok_idx, evts)
-      
+
       if (is.finite(lon0) && is.finite(lat0) && !is.na(ans_b)) {
-        A <- arrow_lines(lon0, lat0, ans_b)
-        
+        A <- arrow_lines(lon0, lat0, ans_b, len_m = 18, head_m = 5, head_ang = 25)
+
         map_shown <- leaflet() %>%
           addTiles() %>%
           addMarkers(lng = lon0, lat = lat0, icon = loc_marker) %>%
-          addPolylines(lng = A$main$lng,  lat = A$main$lat) %>%
-          addPolylines(lng = A$left$lng,  lat = A$left$lat) %>%
-          addPolylines(lng = A$right$lng, lat = A$right$lat) %>%
+          
+          
+          # Player FINAL answer arrow (BLUE)
+          addPolylines(lng = A$main$lng,  lat = A$main$lat,  color = "blue",  weight = 4, opacity = 1) %>%
+          addPolylines(lng = A$left$lng,  lat = A$left$lat,  color = "blue",  weight = 4, opacity = 1) %>%
+          addPolylines(lng = A$right$lng, lat = A$right$lat, color = "blue",  weight = 4, opacity = 1) %>%
           setView(lng = lon0, lat = lat0, zoom = 19)
-        
-        # optional: draw correct direction (dashed)
+
+        # Correct direction arrow (GREEN) - optional
         if (!is.na(cor_b)) {
-          C <- arrow_lines(lon0, lat0, cor_b)
+          C <- arrow_lines(lon0, lat0, cor_b, len_m = 18, head_m = 5, head_ang = 25)
           map_shown <- map_shown %>%
-            addPolylines(lng = C$main$lng,  lat = C$main$lat,  opacity = 0.6, dashArray = "5,5") %>%
-            addPolylines(lng = C$left$lng,  lat = C$left$lat,  opacity = 0.6, dashArray = "5,5") %>%
-            addPolylines(lng = C$right$lng, lat = C$right$lat, opacity = 0.6, dashArray = "5,5")
+                addPolylines(lng = C$main$lng,  lat = C$main$lat,  color = "green", weight = 4, opacity = 0.9) %>%
+                addPolylines(lng = C$left$lng,  lat = C$left$lat,  color = "green", weight = 4, opacity = 0.9) %>%
+                addPolylines(lng = C$right$lng, lat = C$right$lat, color = "green", weight = 4, opacity = 0.9)
         }
-        
+
         mr <- FALSE
       }
     }
@@ -3534,8 +3573,43 @@ server <- function(input, output, session) {
     
     
     
+    # if (!is.na(dir_ok_idx) && t == "theme-direction") {
+    #   evts <- data[[1]]$events
+    #   lon0 <- num(evts$position$coords$longitude[dir_ok_idx])
+    #   lat0 <- num(evts$position$coords$latitude[dir_ok_idx])
+    #   
+    #   ans_b <- get_answer_bearing(dir_ok_idx, evts)
+    #   cor_b <- get_correct_bearing(dir_ok_idx, evts)
+    #   
+    #   if (is.finite(lon0) && is.finite(lat0) && !is.na(ans_b)) {
+    #     A <- arrow_lines(lon0, lat0, ans_b)
+    #     
+    #     map_shown <- leaflet() %>%
+    #       addTiles() %>%
+    #       addMarkers(lng = lon0, lat = lat0, icon = loc_marker) %>%
+    #       addPolylines(lng = A$main$lng,  lat = A$main$lat) %>%
+    #       addPolylines(lng = A$left$lng,  lat = A$left$lat) %>%
+    #       addPolylines(lng = A$right$lng, lat = A$right$lat) %>%
+    #       setView(lng = lon0, lat = lat0, zoom = 19)
+    #     
+    #     if (!is.na(cor_b)) {
+    #       C <- arrow_lines(lon0, lat0, cor_b)
+    #       map_shown <- map_shown %>%
+    #         addPolylines(lng = C$main$lng,  lat = C$main$lat,  opacity = 0.6, dashArray = "5,5") %>%
+    #         addPolylines(lng = C$left$lng,  lat = C$left$lat,  opacity = 0.6, dashArray = "5,5") %>%
+    #         addPolylines(lng = C$right$lng, lat = C$right$lat, opacity = 0.6, dashArray = "5,5")
+    #     }
+    #     
+    #     mr <- FALSE  # ensure fallback doesn't blank it
+    #   }
+    # }
+    
+    
+    
+    
     if (!is.na(dir_ok_idx) && t == "theme-direction") {
       evts <- data[[1]]$events
+      
       lon0 <- num(evts$position$coords$longitude[dir_ok_idx])
       lat0 <- num(evts$position$coords$latitude[dir_ok_idx])
       
@@ -3543,25 +3617,29 @@ server <- function(input, output, session) {
       cor_b <- get_correct_bearing(dir_ok_idx, evts)
       
       if (is.finite(lon0) && is.finite(lat0) && !is.na(ans_b)) {
-        A <- arrow_lines(lon0, lat0, ans_b)
+        A <- arrow_lines(lon0, lat0, ans_b, len_m = 18, head_m = 5, head_ang = 25)
         
         map_shown <- leaflet() %>%
           addTiles() %>%
           addMarkers(lng = lon0, lat = lat0, icon = loc_marker) %>%
-          addPolylines(lng = A$main$lng,  lat = A$main$lat) %>%
-          addPolylines(lng = A$left$lng,  lat = A$left$lat) %>%
-          addPolylines(lng = A$right$lng, lat = A$right$lat) %>%
+          
+          
+          # Player FINAL answer arrow (BLUE)
+          addPolylines(lng = A$main$lng,  lat = A$main$lat,  color = "blue",  weight = 4, opacity = 1) %>%
+          addPolylines(lng = A$left$lng,  lat = A$left$lat,  color = "blue",  weight = 4, opacity = 1) %>%
+          addPolylines(lng = A$right$lng, lat = A$right$lat, color = "blue",  weight = 4, opacity = 1) %>%
           setView(lng = lon0, lat = lat0, zoom = 19)
         
+        # Correct direction arrow (GREEN) - optional
         if (!is.na(cor_b)) {
-          C <- arrow_lines(lon0, lat0, cor_b)
+          C <- arrow_lines(lon0, lat0, cor_b, len_m = 18, head_m = 5, head_ang = 25)
           map_shown <- map_shown %>%
-            addPolylines(lng = C$main$lng,  lat = C$main$lat,  opacity = 0.6, dashArray = "5,5") %>%
-            addPolylines(lng = C$left$lng,  lat = C$left$lat,  opacity = 0.6, dashArray = "5,5") %>%
-            addPolylines(lng = C$right$lng, lat = C$right$lat, opacity = 0.6, dashArray = "5,5")
+            addPolylines(lng = C$main$lng,  lat = C$main$lat,  color = "green", weight = 4, opacity = 0.9) %>%
+            addPolylines(lng = C$left$lng,  lat = C$left$lat,  color = "green", weight = 4, opacity = 0.9) %>%
+            addPolylines(lng = C$right$lng, lat = C$right$lat, color = "green", weight = 4, opacity = 0.9)
         }
         
-        mr <- FALSE  # ensure fallback doesn't blank it
+        mr <- FALSE
       }
     }
     
