@@ -641,6 +641,42 @@ server <- function(input, output, session) {
   }
   
   
+  ######## STARTS - PHoto code error - subscript out of bounds CORRECTION #########
+  safe_photo_at <- function(x, i) {
+    if (is.null(x)) return(NA_character_)
+    
+    # If x is a data.frame (happens when JSON has {} / mixed types)
+    if (is.data.frame(x)) {
+      if (nrow(x) < i || ncol(x) == 0) return(NA_character_)
+      v <- unlist(x[i, , drop = TRUE], use.names = FALSE)
+      v <- v[!is.na(v) & nzchar(v)]
+      if (!length(v)) return(NA_character_)
+      return(as.character(v[1]))
+    }
+    
+    # If x is a list (typical case)
+    if (is.list(x)) {
+      if (length(x) < i) return(NA_character_)
+      v <- unlist(x[[i]], use.names = FALSE)
+      v <- v[!is.na(v) & nzchar(v)]
+      if (!length(v)) return(NA_character_)
+      return(as.character(v[1]))
+    }
+    
+    # If x is an atomic vector (character, etc.)
+    if (length(x) < i) return(NA_character_)
+    v <- as.character(x[i])
+    if (is.na(v) || !nzchar(v)) return(NA_character_)
+    v
+  }
+  ######## ENDS- PHoto code error - subscript out of bounds CORRECTION #########
+  
+  
+  
+  
+  
+  
+  
   
   # Store selected game track data reactively
   selected_game_tracks_rv <- reactiveVal()
@@ -2245,24 +2281,26 @@ server <- function(input, output, session) {
       # 
       
       #photo code starts---------------------
-      cou <- 1 #counter
+      cou <- 1
       pict <- list()
       ans_photo <- list()
       
-      for (i in 1:(length(id)-1)) {
+      for (i in 1:(length(id) - 1)) {
         if ((!is.na(id[i]) && (i != 1) && (id[i] != id[i + 1])) || i == (length(id) - 1)) {
           cou <- cou + 1
-          pict <- append(pict, unlist(data[[1]]$events$task$question$photo[[i]]))
-          ans_photo <- append(ans_photo, unlist(data[[1]]$events$answer$photo[[i]]))
+          
+          pict <- append(pict, safe_photo_at(data[[1]]$events$task$question$photo, i))
+          ans_photo <- append(ans_photo, safe_photo_at(data[[1]]$events$answer$photo, i))
         }
       }
+      
       
       if (length(pict) != 0) { #Photos in assignment
         if (num_value_num() <= length(pict) && !is.na(pict[[num_value_num()]]) && pict[[num_value_num()]] != "") {
           # Render photo display with download buttons
           output$photo_display <- renderUI({
             
-            photo_url <- pict[[num_value_num()]]
+            photo_url <- trimws(pict[[num_value_num()]])
             
             output[["download_image"]] <- downloadHandler(
               filename = function() {
@@ -3921,24 +3959,27 @@ server <- function(input, output, session) {
       # 
       
       #photo code starts---------------------
-    cou <- 1 #counter
+    cou <- 1
     pict <- list()
     ans_photo <- list()
     
-    for (i in 1:(length(id)-1)) {
+    for (i in 1:(length(id) - 1)) {
       if ((!is.na(id[i]) && (i != 1) && (id[i] != id[i + 1])) || i == (length(id) - 1)) {
         cou <- cou + 1
-        pict <- append(pict, unlist(data[[1]]$events$task$question$photo[[i]]))
-        ans_photo <- append(ans_photo, unlist(data[[1]]$events$answer$photo[[i]]))
+        
+        pict <- append(pict, safe_photo_at(data[[1]]$events$task$question$photo, i))
+        ans_photo <- append(ans_photo, safe_photo_at(data[[1]]$events$answer$photo, i))
       }
     }
+    
     
     if (length(pict) != 0) { #Photos in assignment
       if (num_value_num() <= length(pict) && !is.na(pict[[num_value_num()]]) && pict[[num_value_num()]] != "") {
         # Render photo display with download buttons
         output$photo_display <- renderUI({
           
-          photo_url <- pict[[num_value_num()]]
+          photo_url <- trimws(pict[[num_value_num()]])
+          
           
           output[["download_image"]] <- downloadHandler(
             filename = function() {
