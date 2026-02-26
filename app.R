@@ -522,6 +522,26 @@ server <- function(input, output, session) {
   map_rv <- reactiveVal(NULL)
   
   
+  
+  # ---- DEFAULT accuracy fallbacks (used only if task$settings$accuracy is missing/NA) ----
+  DEFAULT_NAV_ACC_M   <- 15   # navigation / distance-based tasks
+  DEFAULT_DIR_ACC_DEG <- 45   # direction tasks
+  
+  get_task_accuracy <- function(evts, idx, kind = c("nav", "dir")) {
+    kind <- match.arg(kind)
+    a <- try(evts$task$settings$accuracy[idx], silent = TRUE)
+    a <- if (inherits(a, "try-error")) NA_real_ else num(a)
+    
+    if (!is.finite(a) || is.na(a)) {
+      if (kind == "nav") DEFAULT_NAV_ACC_M else DEFAULT_DIR_ACC_DEG
+    } else a
+  }
+  
+  ###########ends : Default fallback accuracy of Navigation and direction tasks #########
+  
+  
+  
+  
   ####R helper function ##################
   haversine_m <- function(lon1, lat1, lon2, lat2) {
     R <- 6371000
@@ -560,8 +580,7 @@ server <- function(input, output, session) {
       
       d <- haversine_m(lon_p, lat_p, lon_t, lat_t)
       
-      acc <- suppressWarnings(as.numeric(evts$task$settings$accuracy[j]))
-      if (is.na(acc)) acc <- 10  # fallback if missing
+      acc <- get_task_accuracy(evts, j, kind = "nav")   # 15m fallback
       
       evts$answer$distance[j] <- d
       evts$answer$correct[j]  <- (d <= acc)
@@ -573,8 +592,7 @@ server <- function(input, output, session) {
   ################################################ 
   
   
-  
-  
+  ###########starts : Default fallback accuracy of Navigation and direction tasks #########
   
   
   ########################CALCULATING CORRECT DIRECTION ERROR FIXING starts#################
@@ -591,8 +609,7 @@ server <- function(input, output, session) {
     if (!length(idx)) return(evts)
     
     for (j in idx) {
-      acc <- num(evts$task$settings$accuracy[j])
-      if (is.na(acc)) acc <- 10
+      acc <- get_task_accuracy(evts, j, kind = "dir")   # 45° fallback
       
       cor <- get_correct_bearing(j, evts)
       ans <- get_answer_bearing(j, evts)
@@ -907,12 +924,28 @@ server <- function(input, output, session) {
       }
       
       # single “Error in °/m” text, matching your table logic
+      # --- PATCH 6: manager rule for navigation error display (for Compare/Statistics) ---
       error_txt <- NA_character_
+      
       if (is_dir && !is.na(err_deg)) {
-        error_txt <- paste0(round(err_deg, 2), " °")
+        # Direction tasks: hide error if Correct
+        if (!is.na(correct) && isTRUE(correct)) {
+          error_txt <- NA_character_
+        } else {
+          error_txt <- paste0(round(err_deg, 2), " °")
+        }
+        
       } else if ((is_dist_eval || is_dist_type) && !is.na(dist_to_target_m)) {
-        error_txt <- paste0(round(dist_to_target_m, 2), " m")
+        # Navigation / distance tasks: blank if correct; else show (distance - accuracy)
+        acc_m <- get_task_accuracy(evts, final_idx, kind = "nav")
+        
+        if (!is.na(correct) && isTRUE(correct)) {
+          error_txt <- NA_character_
+        } else {
+          error_txt <- paste0(round(pmax(dist_to_target_m - acc_m, 0), 2), " m")
+        }
       }
+      # --- END PATCH 6 ---
       
       # distance travelled for this task attempt (from waypoints within [start,end])
       dist_travel_m <- distance_travelled_between(track, t_start, t_end)
@@ -1563,6 +1596,27 @@ server <- function(input, output, session) {
       }
     }
     
+    # --- PATCH 4A: collect correctness + accuracy per task-final-row (same j's) ---
+    dist_correct <- list()
+    dist_acc_m   <- list()
+    
+    for (j in 1:(length(id) - 1)) {
+      if ((!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
+        
+        # correctness: prefer answer$correct, fallback to correct
+        cf <- try(data[[1]]$events$answer$correct[j], silent = TRUE)
+        if (inherits(cf, "try-error") || is.null(cf) || length(cf) == 0 || is.na(cf)) {
+          cf <- try(data[[1]]$events$correct[j], silent = TRUE)
+          if (inherits(cf, "try-error")) cf <- NA
+        }
+        dist_correct <- append(dist_correct, truthy(cf))
+        
+        # accuracy in meters for nav/distance tasks (15m fallback via helper)
+        dist_acc_m <- append(dist_acc_m, get_task_accuracy(data[[1]]$events, j, kind = "nav"))
+      }
+    }
+    # --- END PATCH 4A ---
+    
     
     #num <- function(x) suppressWarnings(as.numeric(x))
     
@@ -1629,13 +1683,29 @@ server <- function(input, output, session) {
     dist_num[mask_dir] <- deg_err[mask_dir]
     dist_num[mask_m]   <- d1m[mask_m]
     
-    dist_num <- round(dist_num, 2)
+    # --- PATCH 4B: manager rule for navigation error display ---
+    correct_vec <- as.logical(unlist(dist_correct))
+    acc_m_vec   <- suppressWarnings(as.numeric(unlist(dist_acc_m)))
+    
+    length(correct_vec) <- n
+    length(acc_m_vec)   <- n
     
     dist_txt <- rep(NA_character_, n)
-    dist_txt[mask_dir & !is.na(dist_num)] <- paste0(dist_num[mask_dir & !is.na(dist_num)], " °")
-    dist_txt[mask_m   & !is.na(dist_num)] <- paste0(dist_num[mask_m   & !is.na(dist_num)], " m")
+    
+    
+    # Direction tasks: show error ONLY if incorrect / unknown
+    show_dir <- mask_dir & !is.na(deg_err) & (is.na(correct_vec) | correct_vec == FALSE)
+    dist_txt[show_dir] <- paste0(round(deg_err[show_dir], 2), " °")
+    
+    # Navigation/distance tasks: show blank if correct; else show (distance - accuracy)
+    nav_raw <- d1m
+    nav_err <- pmax(nav_raw - acc_m_vec, 0)
+    
+    show_nav <- mask_m & !is.na(nav_raw) & (is.na(correct_vec) | correct_vec == FALSE)
+    dist_txt[show_nav] <- paste0(round(nav_err[show_nav], 2), " m")
     
     dist <- dist_txt
+    # --- END PATCH 4B ---------------------------------------------
     
     
     
@@ -2797,7 +2867,9 @@ server <- function(input, output, session) {
           Name = nm,
           Correct = ifelse(is.na(correct_txt), NA_character_, correct_txt),
           Answer = ifelse(is.na(ans_deg), NA_character_, paste0(round(ans_deg, 3), " °")),
-          Error  = ifelse(is.na(err_deg), NA_character_, paste0(round(err_deg, 3), " °")),
+          Error  = ifelse(!is.na(correct_txt) && correct_txt == "Correct",
+                          NA_character_,
+                          ifelse(is.na(err_deg), NA_character_, paste0(round(err_deg, 3), " °"))),
           check.names = FALSE,
           stringsAsFactors = FALSE
         ))
@@ -3041,6 +3113,27 @@ server <- function(input, output, session) {
       }
     }
     
+    # --- PATCH 4A: collect correctness + accuracy per task-final-row (same j's) ---
+    dist_correct <- list()
+    dist_acc_m   <- list()
+    
+    for (j in 1:(length(id) - 1)) {
+      if ((!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
+        
+        # correctness: prefer answer$correct, fallback to correct
+        cf <- try(data[[1]]$events$answer$correct[j], silent = TRUE)
+        if (inherits(cf, "try-error") || is.null(cf) || length(cf) == 0 || is.na(cf)) {
+          cf <- try(data[[1]]$events$correct[j], silent = TRUE)
+          if (inherits(cf, "try-error")) cf <- NA
+        }
+        dist_correct <- append(dist_correct, truthy(cf))
+        
+        # accuracy in meters for nav/distance tasks (15m fallback via helper)
+        dist_acc_m <- append(dist_acc_m, get_task_accuracy(data[[1]]$events, j, kind = "nav"))
+      }
+    }
+    # --- END PATCH 4A ---
+    
     
     #num <- function(x) suppressWarnings(as.numeric(x))
     
@@ -3103,13 +3196,28 @@ server <- function(input, output, session) {
     dist_num[mask_dir] <- deg_err[mask_dir]
     dist_num[mask_m]   <- d1m[mask_m]
     
-    dist_num <- round(dist_num, 2)
+    # --- PATCH 4B: manager rule for navigation error display ---
+    correct_vec <- as.logical(unlist(dist_correct))
+    acc_m_vec   <- suppressWarnings(as.numeric(unlist(dist_acc_m)))
+    
+    length(correct_vec) <- n
+    length(acc_m_vec)   <- n
     
     dist_txt <- rep(NA_character_, n)
-    dist_txt[mask_dir & !is.na(dist_num)] <- paste0(dist_num[mask_dir & !is.na(dist_num)], " °")
-    dist_txt[mask_m   & !is.na(dist_num)] <- paste0(dist_num[mask_m   & !is.na(dist_num)], " m")
+    
+    # Direction tasks: show error ONLY if incorrect / unknown
+    show_dir <- mask_dir & !is.na(deg_err) & (is.na(correct_vec) | correct_vec == FALSE)
+    dist_txt[show_dir] <- paste0(round(deg_err[show_dir], 2), " °")
+    
+    # Navigation/distance tasks: show blank if correct; else show (distance - accuracy)
+    nav_raw <- d1m
+    nav_err <- pmax(nav_raw - acc_m_vec, 0)
+    
+    show_nav <- mask_m & !is.na(nav_raw) & (is.na(correct_vec) | correct_vec == FALSE)
+    dist_txt[show_nav] <- paste0(round(nav_err[show_nav], 2), " m")
     
     dist <- dist_txt
+    # --- END PATCH 4B ---
     
     
     
