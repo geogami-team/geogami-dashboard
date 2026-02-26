@@ -2820,6 +2820,7 @@ server <- function(input, output, session) {
       Correct = character(0),
       Time = character(0),
       `Distance travelled` = character(0),
+      `Error to target` = character(0),
       check.names = FALSE,
       stringsAsFactors = FALSE
     )
@@ -2846,8 +2847,9 @@ server <- function(input, output, session) {
         ngts <- rbind(ngts, data.frame(
           Name = nm,
           Correct = "Task not played",
-          Time = NA,
-          `Distance travelled` = NA,
+          Time = NA_character_,
+          `Distance travelled` = NA_character_,
+          `Error to target` = NA_character_,
           check.names = FALSE,
           stringsAsFactors = FALSE
         ))
