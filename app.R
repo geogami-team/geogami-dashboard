@@ -519,10 +519,27 @@ server <- function(input, output, session) {
   
   
   
-  
-  
-  
   map_rv <- reactiveVal(NULL)
+  
+  
+  
+  # ---- DEFAULT accuracy fallbacks (used only if task$settings$accuracy is missing/NA) ----
+  DEFAULT_NAV_ACC_M   <- 15   # navigation / distance-based tasks
+  DEFAULT_DIR_ACC_DEG <- 45   # direction tasks
+  
+  get_task_accuracy <- function(evts, idx, kind = c("nav", "dir")) {
+    kind <- match.arg(kind)
+    a <- try(evts$task$settings$accuracy[idx], silent = TRUE)
+    a <- if (inherits(a, "try-error")) NA_real_ else num(a)
+    
+    if (!is.finite(a) || is.na(a)) {
+      if (kind == "nav") DEFAULT_NAV_ACC_M else DEFAULT_DIR_ACC_DEG
+    } else a
+  }
+  
+  ###########ends : Default fallback accuracy of Navigation and direction tasks #########
+  
+  
   
   
   ####R helper function ##################
@@ -563,8 +580,7 @@ server <- function(input, output, session) {
       
       d <- haversine_m(lon_p, lat_p, lon_t, lat_t)
       
-      acc <- suppressWarnings(as.numeric(evts$task$settings$accuracy[j]))
-      if (is.na(acc)) acc <- 10  # fallback if missing
+      acc <- get_task_accuracy(evts, j, kind = "nav")   # 15m fallback
       
       evts$answer$distance[j] <- d
       evts$answer$correct[j]  <- (d <= acc)
@@ -576,7 +592,10 @@ server <- function(input, output, session) {
   ################################################ 
   
   
+  ###########starts : Default fallback accuracy of Navigation and direction tasks #########
   
+  
+  ########################CALCULATING CORRECT DIRECTION ERROR FIXING starts#################
   fix_direction_tasks <- function(evts) {
     is_ok <- evts$type == "ON_OK_CLICKED"
     eval <- evts$task$evaluate
@@ -590,8 +609,7 @@ server <- function(input, output, session) {
     if (!length(idx)) return(evts)
     
     for (j in idx) {
-      acc <- num(evts$task$settings$accuracy[j])
-      if (is.na(acc)) acc <- 10
+      acc <- get_task_accuracy(evts, j, kind = "dir")   # 45° fallback
       
       cor <- get_correct_bearing(j, evts)
       ans <- get_answer_bearing(j, evts)
@@ -608,7 +626,6 @@ server <- function(input, output, session) {
   
   
   
-  
   dest_point <- function(lon, lat, bearing_deg, dist_m) {
     R <- 6371000
     br <- bearing_deg * pi/180
@@ -622,6 +639,9 @@ server <- function(input, output, session) {
     c(lon2 * 180/pi, lat2 * 180/pi)
   }
   
+  
+  
+  #showing arrow lines for direction based tasks
   arrow_lines <- function(lon, lat, bearing, len_m = 25, head_m = 7, head_ang = 25) {
     end <- dest_point(lon, lat, bearing, len_m)
     left  <- dest_point(end[1], end[2], bearing + 180 - head_ang, head_m)
@@ -639,6 +659,350 @@ server <- function(input, output, session) {
     d <- (a - b + 180) %% 360 - 180
     abs(d)
   }
+  
+  ########################CALCULATING CORRECT DIRECTION ERROR FIXING ENDS#################
+  
+  
+  
+  ######## STARTS - PHoto code error - subscript out of bounds CORRECTION #########
+  safe_photo_at <- function(x, i) {
+    if (is.null(x)) return(NA_character_)
+    
+    # If x is a data.frame (happens when JSON has {} / mixed types)
+    if (is.data.frame(x)) {
+      if (nrow(x) < i || ncol(x) == 0) return(NA_character_)
+      v <- unlist(x[i, , drop = TRUE], use.names = FALSE)
+      v <- v[!is.na(v) & nzchar(v)]
+      if (!length(v)) return(NA_character_)
+      return(as.character(v[1]))
+    }
+    
+    # If x is a list (typical case)
+    if (is.list(x)) {
+      if (length(x) < i) return(NA_character_)
+      v <- unlist(x[[i]], use.names = FALSE)
+      v <- v[!is.na(v) & nzchar(v)]
+      if (!length(v)) return(NA_character_)
+      return(as.character(v[1]))
+    }
+    
+    # If x is an atomic vector (character, etc.)
+    if (length(x) < i) return(NA_character_)
+    v <- as.character(x[i])
+    if (is.na(v) || !nzchar(v)) return(NA_character_)
+    v
+  }
+  ######## ENDS- PHoto code error - subscript out of bounds CORRECTION #########
+  
+  
+  
+  ##########starting - CORRECTING COMPARE TASKS TAB ---MAKING HELPER FUNCTIONS FOR THAT############
+  task_slices_by_init <- function(evts) {
+    init <- which(evts$type == "INIT_TASK")
+    if (!length(init)) return(data.frame(taskNo=integer(0), start=integer(0), end=integer(0)))
+    
+    ends <- c(init[-1] - 1L, nrow(evts))
+    data.frame(taskNo = seq_along(init), start = init, end = ends)
+  }
+  
+  task_id_for_taskNo <- function(evts, taskNo) {
+    sl <- task_slices_by_init(evts)
+    if (nrow(sl) < taskNo) return(NA_character_)
+    s <- sl$start[taskNo]
+    evts$task$`_id`[s]
+  }
+  ##########ENDING - CORRECTING COMPARE TASKS TAB ---MAKING HELPER FUNCTIONS FOR THAT############
+  
+  
+  
+  
+  
+  
+  
+  
+  # -------------------- CANONICAL TASK SUMMARY (ONE truth source) --------------------
+  
+  parse_ts <- function(x) {
+    if (is.null(x) || length(x) == 0) {
+      return(as.POSIXct(NA))
+    }
+    
+    # handle list-columns safely (can happen with jsonlite)
+    x <- unlist(x, use.names = FALSE)
+    
+    if (!length(x)) return(as.POSIXct(NA))
+    
+    # keep as character, remove trailing Z if present
+    x_chr <- as.character(x)
+    x_chr <- sub("Z$", "", x_chr)
+    
+    suppressWarnings(as.POSIXct(x_chr, format = "%Y-%m-%dT%H:%M:%OS", tz = "UTC"))
+  }
+  
+  
+  truthy <- function(x) {
+    if (is.null(x) || length(x) == 0) return(NA)
+    
+    # if something comes in as length>1, take the first (we need a scalar)
+    if (length(x) > 1) x <- x[1]
+    
+    if (is.na(x)) return(NA)
+    
+    if (is.logical(x)) return(isTRUE(x))
+    if (is.character(x)) {
+      if (x == "TRUE")  return(TRUE)
+      if (x == "FALSE") return(FALSE)
+    }
+    NA
+  }
+  
+  
+  format_answer_value <- function(evts, idx) {
+    # idx should be the chosen "final" event index for the task block
+    atype <- try(evts$task$answer$type[idx], silent = TRUE)
+    if (inherits(atype, "try-error") || is.null(atype) || length(atype) == 0) return(NA_character_)
+    
+    if (atype == "TEXT") {
+      v <- try(evts$answer$text[idx], silent = TRUE)
+      v <- if (inherits(v, "try-error")) NA_character_ else as.character(v)
+      return(v)
+    }
+    if (atype == "MULTIPLE_CHOICE_TEXT") {
+      v <- try(evts$answer$selectedChoice$value[idx], silent = TRUE)
+      v <- if (inherits(v, "try-error")) NA_character_ else as.character(v)
+      return(v)
+    }
+    if (atype == "NUMBER") {
+      v <- try(evts$answer$numberInput[idx], silent = TRUE)
+      v <- if (inherits(v, "try-error")) NA_character_ else as.character(v)
+      return(v)
+    }
+    
+    # PHOTO / MAP_POINT / DRAW / etc. => no stable scalar to show in big table
+    NA_character_
+  }
+  
+  distance_travelled_between <- function(track, t_start, t_end, speed_cap = 10) {
+    wps <- track$waypoints
+    if (is.null(wps) || is.null(wps$timestamp)) return(NA_real_)
+    
+    ts <- parse_ts(wps$timestamp)
+    if (all(is.na(ts))) return(NA_real_)
+    
+    keep <- which(ts >= t_start & ts <= t_end)
+    if (length(keep) < 2) return(NA_real_)
+    
+    lon <- num(wps$position$coords$longitude[keep])
+    lat <- num(wps$position$coords$latitude[keep])
+    ts  <- ts[keep]
+    
+    o <- order(ts)
+    lon <- lon[o]; lat <- lat[o]; ts <- ts[o]
+    
+    # optional accuracy gate if available
+    acc <- NULL
+    if (!is.null(wps$position$coords$accuracy)) {
+      acc <- suppressWarnings(as.numeric(wps$position$coords$accuracy[keep][o]))
+    }
+    
+    seg_d  <- haversine_m(lon[-length(lon)], lat[-length(lat)], lon[-1], lat[-1])
+    seg_dt <- pmax(as.numeric(diff(ts), units = "secs"), 0.001)
+    speed  <- seg_d / seg_dt
+    
+    good <- is.finite(seg_d) & is.finite(speed) & speed <= speed_cap
+    if (!is.null(acc)) {
+      # accept NA accuracy, but drop very noisy points where accuracy is huge
+      good_acc <- (is.na(acc[-length(acc)]) | acc[-length(acc)] <= 20) &
+        (is.na(acc[-1])          | acc[-1]          <= 20)
+      good <- good & good_acc
+    }
+    
+    sum(seg_d[good], na.rm = TRUE)
+  }
+  
+  task_slices_by_init_safe <- function(evts) {
+    init <- which(evts$type == "INIT_TASK")
+    if (!length(init)) return(data.frame(taskNo=integer(0), start=integer(0), end=integer(0)))
+    ends <- c(init[-1] - 1L, nrow(evts))
+    data.frame(taskNo = seq_along(init), start = init, end = ends)
+  }
+  
+  task_summary <- function(track) {
+    if (is.null(track) || is.null(track$events)) {
+      return(data.frame())
+    }
+    evts <- track$events
+    sl <- task_slices_by_init_safe(evts)
+    if (!nrow(sl)) return(data.frame())
+    
+    out <- vector("list", nrow(sl))
+    
+    for (k in seq_len(nrow(sl))) {
+      s <- sl$start[k]
+      e <- sl$end[k]
+      block <- s:e
+      
+      # final event preference: ON_OK_CLICKED, else last event in block
+      ok <- block[evts$type[block] == "ON_OK_CLICKED"]
+      final_idx <- if (length(ok)) tail(ok, 1) else e
+      
+      task_id <- try(evts$task$`_id`[s], silent = TRUE)
+      task_id <- if (inherits(task_id, "try-error")) NA_character_ else as.character(task_id)
+      
+      task_type <- try(evts$task$type[s], silent = TRUE)
+      task_type <- if (inherits(task_type, "try-error")) NA_character_ else as.character(task_type)
+      
+      task_cat <- try(evts$task$category[s], silent = TRUE)
+      task_cat <- if (inherits(task_cat, "try-error")) NA_character_ else as.character(task_cat)
+      
+      assignment <- try(evts$task$question$text[s], silent = TRUE)
+      assignment <- if (inherits(assignment, "try-error")) NA_character_ else as.character(assignment)
+      
+      t_start <- parse_ts(evts$timestamp[s])
+      t_end   <- parse_ts(evts$timestamp[final_idx])
+      time_s  <- if (is.na(t_start) || is.na(t_end)) NA_integer_ else as.integer(floor(difftime(t_end, t_start, units="secs")))
+      
+      tries <- sum(evts$type[block] == "ON_OK_CLICKED", na.rm = TRUE)
+      
+      # correctness (prefer answer$correct, fallback to correct)
+      cr <- try(evts$answer$correct[final_idx], silent = TRUE)
+      cr <- if (inherits(cr, "try-error") || is.null(cr) || length(cr) == 0 || is.na(cr)) try(evts$correct[final_idx], silent = TRUE) else cr
+      cr <- if (inherits(cr, "try-error")) NA else cr
+      correct <- truthy(cr)
+      
+      nav_reached <- (!is.na(task_cat) && task_cat == "nav" && any(evts$type[block] == "WAYPOINT_REACHED", na.rm=TRUE))
+      
+      status <- NA_character_
+      
+      if (!is.na(correct)) {
+        status <- if (isTRUE(correct)) "Correct" else "Incorrect"
+        
+      } else if (!is.na(task_cat) && task_cat == "nav") {
+        
+        # 1) Prefer waypoint reached if present (nav-flag usually)
+        if (isTRUE(nav_reached)) {
+          status <- "Correct"
+          
+        } else {
+          # 2) Big-table rule: for nav-arrow/nav-text/nav-photo, if task took >0s => treat as Correct
+          is_nav_guided <- !is.na(task_type) && task_type %in% c("nav-arrow", "nav-text", "nav-photo")
+          
+          if (is_nav_guided && !is.na(time_s) && time_s > 0) {
+            status  <- "Correct"
+            correct <- TRUE   # important: so Compare/Stats count it as Correct
+          } else {
+            status <- "Target not reached"
+          }
+        }
+      }
+      
+      # answer display string (status + optional value)
+      ans_val <- format_answer_value(evts, final_idx)
+      answer_txt <- if (!is.na(status) && !is.na(ans_val) && nzchar(ans_val)) paste(status, ans_val) else status
+      
+      # direction metrics
+      ans_b <- NA_real_
+      cor_b <- NA_real_
+      err_deg <- NA_real_
+      
+      is_dir <- (!is.na(task_type) && task_type == "theme-direction") ||
+        (!is.null(evts$task$evaluate) && !is.na(evts$task$evaluate[final_idx]) &&
+           evts$task$evaluate[final_idx] %in% c("evalMapDirection","evalDirection"))
+      
+      if (is_dir) {
+        ans_b <- get_answer_bearing(final_idx, evts)
+        cor_b <- get_correct_bearing(final_idx, evts)
+        err_deg <- angle_diff_deg(ans_b, cor_b)
+      }
+      
+      # distance-to-target metric (meters) for nav-flag/theme-loc OR distanceToPoint evaluation
+      dist_to_target_m <- NA_real_
+      is_dist_eval <- (!is.null(evts$task$evaluate) && !is.na(evts$task$evaluate[final_idx]) &&
+                         evts$task$evaluate[final_idx] == "distanceToPoint")
+      is_dist_type <- (!is.na(task_type) && task_type %in% c("nav-flag","theme-loc"))
+      
+      if (is_dist_eval || is_dist_type) {
+        d0 <- try(evts$answer$distance[final_idx], silent = TRUE)
+        d0 <- if (inherits(d0, "try-error")) NA_real_ else num(d0)
+        dist_to_target_m <- d0
+        
+        # fallback compute if missing but target+position exist
+        if (is.na(dist_to_target_m)) {
+          targ <- try(evts$answer$target[[final_idx]], silent = TRUE)
+          if (!inherits(targ, "try-error") && length(targ) == 2) {
+            lon_t <- num(targ[1]); lat_t <- num(targ[2])
+            lon_p <- num(evts$position$coords$longitude[final_idx])
+            lat_p <- num(evts$position$coords$latitude[final_idx])
+            if (is.finite(lon_t) && is.finite(lat_t) && is.finite(lon_p) && is.finite(lat_p)) {
+              dist_to_target_m <- haversine_m(lon_p, lat_p, lon_t, lat_t)
+            }
+          }
+        }
+      }
+      
+      # single “Error in °/m” text, matching your table logic
+      # --- PATCH 6: manager rule for navigation error display (for Compare/Statistics) ---
+      error_txt <- NA_character_
+      
+      if (is_dir && !is.na(err_deg)) {
+        # Direction tasks: hide error if Correct
+        if (!is.na(correct) && isTRUE(correct)) {
+          error_txt <- NA_character_
+        } else {
+          error_txt <- paste0(round(err_deg, 2), " °")
+        }
+        
+      } else if ((is_dist_eval || is_dist_type) && !is.na(dist_to_target_m)) {
+        # Navigation / distance tasks: blank if correct; else show (distance - accuracy)
+        acc_m <- get_task_accuracy(evts, final_idx, kind = "nav")
+        
+        if (!is.na(correct) && isTRUE(correct)) {
+          error_txt <- NA_character_
+        } else {
+          error_txt <- paste0(round(pmax(dist_to_target_m - acc_m, 0), 2), " m")
+        }
+      }
+      # --- END PATCH 6 ---
+      
+      # distance travelled for this task attempt (from waypoints within [start,end])
+      dist_travel_m <- distance_travelled_between(track, t_start, t_end)
+      
+      out[[k]] <- data.frame(
+        taskNo = sl$taskNo[k],
+        task_id = task_id,
+        task_type = task_type,
+        category = task_cat,
+        start_idx = s,
+        end_idx = e,
+        final_idx = final_idx,
+        start_time = t_start,
+        end_time = t_end,
+        time_s = time_s,
+        tries = tries,
+        status = status,
+        answer_txt = answer_txt,
+        ans_bearing = ans_b,
+        cor_bearing = cor_b,
+        err_deg = err_deg,
+        dist_to_target_m = dist_to_target_m,
+        dist_travel_m = dist_travel_m,
+        error_txt = error_txt,
+        stringsAsFactors = FALSE
+      )
+    }
+    
+    do.call(rbind, out)
+  }
+  
+  # -------------------- END CANONICAL TASK SUMMARY --------------------
+  
+  
+  
+  
+  
+  
+  
+  
   
   
   
@@ -1249,6 +1613,27 @@ server <- function(input, output, session) {
       }
     }
     
+    # --- PATCH 4A: collect correctness + accuracy per task-final-row (same j's) ---
+    dist_correct <- list()
+    dist_acc_m   <- list()
+    
+    for (j in 1:(length(id) - 1)) {
+      if ((!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
+        
+        # correctness: prefer answer$correct, fallback to correct
+        cf <- try(data[[1]]$events$answer$correct[j], silent = TRUE)
+        if (inherits(cf, "try-error") || is.null(cf) || length(cf) == 0 || is.na(cf)) {
+          cf <- try(data[[1]]$events$correct[j], silent = TRUE)
+          if (inherits(cf, "try-error")) cf <- NA
+        }
+        dist_correct <- append(dist_correct, truthy(cf))
+        
+        # accuracy in meters for nav/distance tasks (15m fallback via helper)
+        dist_acc_m <- append(dist_acc_m, get_task_accuracy(data[[1]]$events, j, kind = "nav"))
+      }
+    }
+    # --- END PATCH 4A ---
+    
     
     #num <- function(x) suppressWarnings(as.numeric(x))
     
@@ -1315,13 +1700,29 @@ server <- function(input, output, session) {
     dist_num[mask_dir] <- deg_err[mask_dir]
     dist_num[mask_m]   <- d1m[mask_m]
     
-    dist_num <- round(dist_num, 2)
+    # --- PATCH 4B: manager rule for navigation error display ---
+    correct_vec <- as.logical(unlist(dist_correct))
+    acc_m_vec   <- suppressWarnings(as.numeric(unlist(dist_acc_m)))
+    
+    length(correct_vec) <- n
+    length(acc_m_vec)   <- n
     
     dist_txt <- rep(NA_character_, n)
-    dist_txt[mask_dir & !is.na(dist_num)] <- paste0(dist_num[mask_dir & !is.na(dist_num)], " °")
-    dist_txt[mask_m   & !is.na(dist_num)] <- paste0(dist_num[mask_m   & !is.na(dist_num)], " m")
+    
+    
+    # Direction tasks: show error ONLY if incorrect / unknown
+    show_dir <- mask_dir & !is.na(deg_err) & (is.na(correct_vec) | correct_vec == FALSE)
+    dist_txt[show_dir] <- paste0(round(deg_err[show_dir], 2), " °")
+    
+    # Navigation/distance tasks: show blank if correct; else show (distance - accuracy)
+    nav_raw <- d1m
+    nav_err <- pmax(nav_raw - acc_m_vec, 0)
+    
+    show_nav <- mask_m & !is.na(nav_raw) & (is.na(correct_vec) | correct_vec == FALSE)
+    dist_txt[show_nav] <- paste0(round(nav_err[show_nav], 2), " m")
     
     dist <- dist_txt
+    # --- END PATCH 4B ---------------------------------------------
     
     
     
@@ -1816,40 +2217,77 @@ server <- function(input, output, session) {
     dr_point_lat <- safe_coords(dr_point_lat)
     
     
+    # if (!is.na(dir_ok_idx) && t == "theme-direction") {
+    #   evts <- data[[1]]$events
+    #   
+    #   lon0 <- num(evts$position$coords$longitude[dir_ok_idx])
+    #   lat0 <- num(evts$position$coords$latitude[dir_ok_idx])
+    #   
+    #   ans_b <- get_answer_bearing(dir_ok_idx, evts)
+    #   cor_b <- get_correct_bearing(dir_ok_idx, evts)
+    #   
+    #   if (is.finite(lon0) && is.finite(lat0) && !is.na(ans_b)) {
+    #     A <- arrow_lines(lon0, lat0, ans_b)
+    #     
+    #     map_shown <- leaflet() %>%
+    #       addTiles() %>%
+    #       addMarkers(lng = lon0, lat = lat0, icon = loc_marker) %>%
+    #       addPolylines(lng = A$main$lng,  lat = A$main$lat) %>%
+    #       addPolylines(lng = A$left$lng,  lat = A$left$lat) %>%
+    #       addPolylines(lng = A$right$lng, lat = A$right$lat) %>%
+    #       setView(lng = lon0, lat = lat0, zoom = 19)
+    #     
+    #     # optional: draw correct direction (dashed)
+    #     if (!is.na(cor_b)) {
+    #       C <- arrow_lines(lon0, lat0, cor_b)
+    #       map_shown <- map_shown %>%
+    #         addPolylines(lng = C$main$lng,  lat = C$main$lat,  opacity = 0.6, dashArray = "5,5") %>%
+    #         addPolylines(lng = C$left$lng,  lat = C$left$lat,  opacity = 0.6, dashArray = "5,5") %>%
+    #         addPolylines(lng = C$right$lng, lat = C$right$lat, opacity = 0.6, dashArray = "5,5")
+    #     }
+    #     
+    #     mr <- FALSE
+    #   }
+    # }
+    
+    
+    
+    
     if (!is.na(dir_ok_idx) && t == "theme-direction") {
       evts <- data[[1]]$events
-      
+
       lon0 <- num(evts$position$coords$longitude[dir_ok_idx])
       lat0 <- num(evts$position$coords$latitude[dir_ok_idx])
-      
+
       ans_b <- get_answer_bearing(dir_ok_idx, evts)
       cor_b <- get_correct_bearing(dir_ok_idx, evts)
-      
+
       if (is.finite(lon0) && is.finite(lat0) && !is.na(ans_b)) {
-        A <- arrow_lines(lon0, lat0, ans_b)
-        
+        A <- arrow_lines(lon0, lat0, ans_b, len_m = 18, head_m = 5, head_ang = 25)
+
         map_shown <- leaflet() %>%
           addTiles() %>%
           addMarkers(lng = lon0, lat = lat0, icon = loc_marker) %>%
-          addPolylines(lng = A$main$lng,  lat = A$main$lat) %>%
-          addPolylines(lng = A$left$lng,  lat = A$left$lat) %>%
-          addPolylines(lng = A$right$lng, lat = A$right$lat) %>%
+          
+          
+          # Player FINAL answer arrow (BLUE)
+          addPolylines(lng = A$main$lng,  lat = A$main$lat,  color = "blue",  weight = 4, opacity = 1) %>%
+          addPolylines(lng = A$left$lng,  lat = A$left$lat,  color = "blue",  weight = 4, opacity = 1) %>%
+          addPolylines(lng = A$right$lng, lat = A$right$lat, color = "blue",  weight = 4, opacity = 1) %>%
           setView(lng = lon0, lat = lat0, zoom = 19)
-        
-        # optional: draw correct direction (dashed)
+
+        # Correct direction arrow (GREEN) - optional
         if (!is.na(cor_b)) {
-          C <- arrow_lines(lon0, lat0, cor_b)
+          C <- arrow_lines(lon0, lat0, cor_b, len_m = 18, head_m = 5, head_ang = 25)
           map_shown <- map_shown %>%
-            addPolylines(lng = C$main$lng,  lat = C$main$lat,  opacity = 0.6, dashArray = "5,5") %>%
-            addPolylines(lng = C$left$lng,  lat = C$left$lat,  opacity = 0.6, dashArray = "5,5") %>%
-            addPolylines(lng = C$right$lng, lat = C$right$lat, opacity = 0.6, dashArray = "5,5")
+                addPolylines(lng = C$main$lng,  lat = C$main$lat,  color = "green", weight = 4, opacity = 0.9) %>%
+                addPolylines(lng = C$left$lng,  lat = C$left$lat,  color = "green", weight = 4, opacity = 0.9) %>%
+                addPolylines(lng = C$right$lng, lat = C$right$lat, color = "green", weight = 4, opacity = 0.9)
         }
-        
+
         mr <- FALSE
       }
     }
-    
-    
     
     
     
@@ -2245,24 +2683,26 @@ server <- function(input, output, session) {
       # 
       
       #photo code starts---------------------
-      cou <- 1 #counter
+      cou <- 1
       pict <- list()
       ans_photo <- list()
       
-      for (i in 1:(length(id)-1)) {
+      for (i in 1:(length(id) - 1)) {
         if ((!is.na(id[i]) && (i != 1) && (id[i] != id[i + 1])) || i == (length(id) - 1)) {
           cou <- cou + 1
-          pict <- append(pict, unlist(data[[1]]$events$task$question$photo[[i]]))
-          ans_photo <- append(ans_photo, unlist(data[[1]]$events$answer$photo[[i]]))
+          
+          pict <- append(pict, safe_photo_at(data[[1]]$events$task$question$photo, i))
+          ans_photo <- append(ans_photo, safe_photo_at(data[[1]]$events$answer$photo, i))
         }
       }
+      
       
       if (length(pict) != 0) { #Photos in assignment
         if (num_value_num() <= length(pict) && !is.na(pict[[num_value_num()]]) && pict[[num_value_num()]] != "") {
           # Render photo display with download buttons
           output$photo_display <- renderUI({
             
-            photo_url <- pict[[num_value_num()]]
+            photo_url <- trimws(pict[[num_value_num()]])
             
             output[["download_image"]] <- downloadHandler(
               filename = function() {
@@ -2357,318 +2797,154 @@ server <- function(input, output, session) {
   
   #####multiple files - (4th and 5th menus)
   observeEvent(req(input$selected_multiple_files, num_value_num()), {
-    cores <- data.frame(Name = c(), Correct = c(), Answer = c(), Error = c())
-    ngts <- data.frame(Name = c(), Correct = c(), Time = c(), Distance = c())
+    data_ref  <- loaded_json()
+    data_list <- load_multiple()
     
-    sum_cor <- list()
-    sum_incor <- list()
+    ref_track <- data_ref[[1]]
+    ref_sum   <- task_summary(ref_track)
     
-    data2 <- load_multiple() #load multiple json
-    data <- loaded_json() #load one json
-    
-    id <- data[[1]]$events$task[["_id"]]
-    type_task <- data[[1]]$events$task$type
-    cat_task <- data[[1]]$events$task$category
-    t <- "" #type task
-    cou <- 1 #counter
-    
-    
-    #Recovering type task
-    for (i in 1:(length(id)-1)) {
-      if (!is.na(cat_task[i])) {
-        if ((cat_task[i] == "nav") && (cou == num_value_num())) {
-          t <- type_task[i]
-        }
-        if ((cat_task[i] == "theme") && (cou == num_value_num())) {
-          t <- type_task[i]
-        }
-        if ((cat_task[i] == "info") && (cou == num_value_num())) {
-          t <- cat_task[i]
-        }
-      }
-      if ((!is.na(id[i]) && (i != 1) && (id[i] != id[i + 1])) || i == (length(id) - 1)) {
-        cou <- cou + 1
-      }
+    if (is.null(ref_sum) || nrow(ref_sum) < num_value_num()) {
+      output$cmp_table1 <- renderTable(data.frame())
+      output$cmp_table2 <- renderTable(data.frame())
+      output$tabLegend  <- renderText("Task type: Information")
+      output$graphLegend<- renderText("Task type: Information")
+      return()
     }
     
-    for (i in 1:length(data2)) {
-      
-      id <- data2[[i]]$events$task[["_id"]]
-      
-      ans2 <- list()
-      typ2 <- list()
-      dist1_m_new <- list()
-      dist1_deg_new <- list()
-      dist2_deg_new <- list()
-      
-      tps <- data2[[i]]$events$timestamp
-      time1 <- as.POSIXct(tps[1], format = "%Y-%m-%dT%H:%M:%OS",tz = "UTC")
-      tmp2 <- list()
-      
-      ev <- data2[[i]]$events$type #Name of the event
-      tries = 0
-      try2 <- list()
-      
-      for (j in 1:(length(id) - 1)) {
-        if (ev[j] == "ON_OK_CLICKED") {
-          tries <- tries + 1
-        }
-        if ((!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
-          if (length(data2[[i]]$events$answer$correct[j]) != 0) {
-            ans2 <- append(ans2, data2[[i]]$events$answer$correct[j])
-          } else {
-            ans2 <- append(ans2, data2[[i]]$events$correct[j])
-          }
-          typ2 <- append(typ2, data2[[i]]$events$task$type[j])
-          
-          # distance in meters
-          dist1_m_new <- append(dist1_m_new, data2[[i]]$events$answer$distance[j])
-          
-          # bearings: use shared helpers
-          ans_bearing <- get_answer_bearing(j, data2[[i]]$events)
-          cor_bearing <- get_correct_bearing(j, data2[[i]]$events)
-          
-          dist1_deg_new <- append(dist1_deg_new, ans_bearing)
-          dist2_deg_new <- append(dist2_deg_new, cor_bearing)
-          
-          time2 <- as.POSIXct(tps[j], format = "%Y-%m-%dT%H:%M:%OS", tz = "UTC")
-          tmp2 <- append(tmp2, floor(as.numeric(time2 - time1, units = "secs")))
-          time1 <- as.POSIXct(tps[j+1], format = "%Y-%m-%dT%H:%M:%OS", tz = "UTC")
-          
-          try2 <- append(try2, tries)
-          tries = 0
-        }
-      }
-      
-      
-      
-      for (k in 1:length(ans2)) {
-        if (!is.na(typ2[[k]][1]) && (typ2[[k]][1] == "nav-photo" || typ2[[k]][1] == "nav-arrow" || typ2[[k]][1] == "nav-text") && tmp2[[k]][1] != 0 && is.na(ans2[[k]][1])) {
-          ans2[[k]][1] <- "Correct"
-        }
-        if (!is.na(ans2[[k]][1]) && ans2[[k]][1] == TRUE) {
-          ans2[[k]][1] <- "Correct"
-        }
-        if (!is.na(ans2[[k]][1]) && ans2[[k]][1] == FALSE) {
-          ans2[[k]][1] <- "Incorrect"
-        }
-      }
-      
-      #Taking the player trajectory
-      traj_lng <- list()
-      traj_lat <- list()
-      accuracy <- list()
-      task_number <- data2[[i]]$waypoints$taskNo #Task number
-      for (k in 1:length(task_number)) {
-        if ((task_number[k] == num_value_num())) {
-          traj_lng <- append(traj_lng, data2[[i]]$waypoints$position$coords$longitude[k])
-          traj_lat <- append(traj_lat, data2[[i]]$waypoints$position$coords$latitude[k])
-          if (length(data2[[i]]$waypoints$position$coords$accuracy) != 0) {
-            accuracy <- append(accuracy, data2[[i]]$waypoints$position$coords$accuracy[k]) #accuracy on coordinates
-          }
-          else {
-            accuracy <- append(accuracy, 1)
-          }
-        }
-      }
-      
-      #Computing distance traveled
-      deg_to_rad <- pi/180
-      R <- 6.378e6
-      d_total <- 0 #counter
-      if (length(traj_lng) > 1) {
-        for (k in 1:(length(traj_lng)-1)) {
-          if (!is.na(traj_lng[[k]][1])) {
-            lat_1 <- traj_lat[[k]][1]
-            lng_1 <- traj_lng[[k]][1]
-            lat_2 <- traj_lat[[k+1]][1]
-            lng_2 <- traj_lng[[k+1]][1]
-            d <- R * acos(sin(lat_1*deg_to_rad)*sin(lat_2*deg_to_rad) + cos(lat_1*deg_to_rad)*cos(lat_2*deg_to_rad)*cos((lng_2 - lng_1)*deg_to_rad))
-            if (d <= 10 && accuracy[[k]] <= 20) {
-              d_total <- d_total + d
-            }
-          }
-        }
-      }
-      #print(d_total)
-      
-      #Computing again time (with way points)
-      time_waypoints_new <- list()
-      tps_waypoints <- data2[[i]]$waypoints$timestamp
-      for (k in 1:length(tmp2)) {
-        if (tmp2[[k]] == 0) {
-          for (n in 1:length(task_number)) {
-            if (task_number[n] == k) {
-              time_waypoints_new <- append(time_waypoints_new, tps_waypoints[[n]])
-            }
-          }
-          if (length(time_waypoints_new) != 0) {
-            x <- as.POSIXct(time_waypoints_new[[1]], format = "%Y-%m-%dT%H:%M:%OS",tz = "UTC")
-            y <- as.POSIXct(time_waypoints_new[[length(time_waypoints_new)]], format = "%Y-%m-%dT%H:%M:%OS",tz = "UTC")
-            delta <- floor(as.numeric(y - x, units = "secs"))
-            tmp2[[k]] <- delta
-          }
-        }
-        time_waypoints_new <- list()
-      }
-      
-      #TIME VS DISTANCE
-      if (length(ans2) >= num_value_num() && unlist(tmp2[[num_value_num()]][1]) != 0) {
-        if (is.na(ans2[[num_value_num()]][1]) && grepl(pattern = "nav", t)) {
-          ans2[[num_value_num()]][1] <- "Target not reached" #navigation task
-        } 
-        if (length(dist1_m_new) != 0 && !is.na(unlist(dist1_m_new)[[num_value_num()]][1])) { #Distance to the correct answer or not
-          ngt <- cbind(Name = data2[[i]]$players[1], Correct = unlist(ans2[[num_value_num()]][1]), Time = paste(unlist(tmp2[[num_value_num()]][1]),"s"), Distance_travelled = paste(round(d_total), "m"), Distance_to_the_correct_answer = paste(round(unlist(dist1_m_new)[[num_value_num()]][1],3),"m"))
-          ngts <- rbind(ngts, ngt)
-        }
-        else {
-          ngt <- cbind(Name = data2[[i]]$players[1], Correct = unlist(ans2[[num_value_num()]][1]), Time = paste(unlist(tmp2[[num_value_num()]][1]),"s"), Distance_travelled = paste(round(d_total),"m"), Distance_to_the_correct_answer = NA)
-          ngts <- rbind(ngts, ngt)
-        }
-      }
-      
-      # Coerce degree lists to numeric and align lengths
-      d1deg_new <- num(unlist(dist1_deg_new))
-      d2deg_new <- num(unlist(dist2_deg_new))
-      
-      maxn <- max(length(d1deg_new), length(d2deg_new))
-      length(d1deg_new) <- maxn
-      length(d2deg_new) <- maxn
-      
-      deg_error <- angle_diff_deg_vec(d1deg_new, d2deg_new)
-      
-      
-      
-      
-      # CORRECT & ERRORS
-      if (length(d1deg_new) >= num_value_num()) {
-        idx <- num_value_num()
-        
-        if (!is.na(ans2[[idx]][1]) || !is.na(d1deg_new[idx])) {
-          err_val   <- deg_error[idx]
-          answer_deg <- d1deg_new[idx]
-          
-          core <- cbind(
-            Name   = data2[[i]]$players[1],
-            Correct= ans2[[idx]][1],
-            Answer = paste(round(answer_deg, 3), "°"),
-            Error  = paste(round(err_val,      3), "°")
-          )
-          
-          cores <- rbind(cores, core)
-        }
-      }
-      
-      
-      #Computing correct or incorrect tries
-      if (length(ans2) >= num_value_num()) { #outside index
-        if (!is.na(ans2[[num_value_num()]])) { #answer existence
-          if (ans2[[num_value_num()]] == "Correct") { #correct answer
-            sum_incor <- append(sum_incor, 0) 
-            sum_cor <- append(sum_cor, 1)
-          }
-          else if (ans2[[num_value_num()]] == "Target not reached") { #Target no reached
-            sum_incor <- append(sum_incor, 0) 
-            sum_cor <- append(sum_cor, 0)
-          }
-          else { #incorrect answer
-            sum_incor <- append(sum_incor, 1)
-            sum_cor <- append(sum_cor, 0)
-          }
-        }
-        else { #NA value: indeterminate answer
-          sum_incor <- append(sum_incor, 0)
-          sum_cor <- append(sum_cor, 0)
-        }
-      }
-    }
+    ref_task_id   <- ref_sum$task_id[num_value_num()]
+    ref_task_type <- ref_sum$task_type[num_value_num()]
     
-    #Change the columns names in tables
-    if (ncol(ngts) >= 4) {
-      colnames(ngts)[4] <- "Distance travelled"
-    }
-    if (ncol(ngts) == 5) {
-      colnames(ngts)[5] <- "Distance to the correct answer"
-    }
-    
-    
-    #Graphic on time
-    if (length(ngts) != 0) {
-      
-      oral <- list()
-      oral2 <- list()
-      seconds <- strsplit(ngts[,3], " s")
-      meters <- strsplit(ngts[,4], " m")
-      for (k in 1:length(seconds)) {
-        oral <- append(oral, as.numeric(seconds[[k]]))  #Convert in numeric format to show on graphic
-        oral2 <- append(oral2, as.numeric(meters[[k]]))
-      }
-      
-      df_player <- data.frame(time = unlist(oral), distance = unlist(oral2), players = ngts[,1])
-      time_chart <- ggplot(df_player, aes(x = time, y = distance, fill = players)) +
-        geom_point(size=4, shape=22) +
-        labs(title = paste("Time chart of task:", t), x = "Time for this task in seconds", y = "Distance travelled in metres")
-      
-      for (i in 1:length(df_player$time)) {
-        if (df_player$time[i] == 0) {
-          sum_cor[i] <- 0
-          sum_incor[i] <- 0
-        }
-      }
-    }
-    else {
-      time_chart <- ggplot() +
-        theme_void() +
-        labs(title = "You didn't reply for this task")
-    }
-    
-    
-    output$time_chart <- renderPlot({
-      time_chart
-    })
-    
-    #Download time chart
-    output$save_time_chart <- downloadHandler(
-      filename = function(){
-        paste("time_chart_", Sys.Date(), ".png", sep="")
-      },
-      content = function(file){
-        png(file)
-        print(time_chart)
-        dev.off()
-      }
+    # Tables
+    ngts <- data.frame(
+      Name = character(0),
+      Correct = character(0),
+      Time = character(0),
+      `Distance travelled` = character(0),
+      `Error to target` = character(0),
+      check.names = FALSE,
+      stringsAsFactors = FALSE
     )
     
+    cores <- data.frame(
+      Name = character(0),
+      Correct = character(0),
+      Answer = character(0),
+      Error = character(0),
+      check.names = FALSE,
+      stringsAsFactors = FALSE
+    )
     
-    corr <- sum(unlist(sum_cor)) #Number of correct answer for one task - only the last answer per player
-    incorr <- sum(unlist(sum_incor)) #Number of incorrect answer for one task - only the last answer per player
-    rel <- c(corr,incorr)
-    answer_vect <- c("Correct","Incorrect")
-    df_pie <- data.frame(Answers = answer_vect, value = rel)
-    #print(df_pie)
-    
-    
-    #pie_chart (Correct & Incorrect)
-    if (corr == 0 && incorr == 0) {
-      pie_chart <- ggplot() +
-        theme_void() +
-        labs(title = "You didn't reply for this task")
+    # Build per-player row by matching task_id (never by taskNo)
+    for (i in seq_along(data_list)) {
+      tr <- data_list[[i]]
+      nm <- if (!is.null(tr$players) && length(tr$players)) tr$players[1] else paste0("Player_", i)
+      
+      sm <- task_summary(tr)
+      hit <- sm[sm$task_id == ref_task_id, , drop = FALSE]
+      
+      if (!nrow(hit)) {
+        # task not played
+        ngts <- rbind(ngts, data.frame(
+          Name = nm,
+          Correct = "Task not played",
+          Time = NA_character_,
+          `Distance travelled` = NA_character_,
+          `Error to target` = NA_character_,
+          check.names = FALSE,
+          stringsAsFactors = FALSE
+        ))
+        next
+      }
+      
+      # if the same task_id appears multiple times (back button / replay), use the LAST attempt
+      row <- hit[nrow(hit), , drop = FALSE]
+      
+      correct_txt <- row$status
+      time_txt <- if (is.na(row$time_s)) NA_character_ else paste0(row$time_s, " s")
+      dist_txt <- if (is.na(row$dist_travel_m)) NA_character_ else paste0(round(row$dist_travel_m), " m")
+      
+      # Big-table style:
+      # - blank if Correct
+      # - else (distance - accuracy) with 15m fallback
+      dist_to_target_txt <- row$error_txt
+      
+      # Navigation-style table (also used in Statistics time-vs-distance)
+      ngts <- rbind(ngts, data.frame(
+        Name = nm,
+        Correct = ifelse(is.na(correct_txt), NA_character_, correct_txt),
+        Time = time_txt,
+        `Distance travelled` = dist_txt,
+        `Error to target` = dist_to_target_txt,
+        check.names = FALSE,
+        stringsAsFactors = FALSE
+      ))
+      
+      # Direction table only for theme-direction (Answer/Error in degrees)
+      if (!is.na(ref_task_type) && ref_task_type == "theme-direction") {
+        ans_deg <- row$ans_bearing
+        err_deg <- row$err_deg
+        
+        cores <- rbind(cores, data.frame(
+          Name = nm,
+          Correct = ifelse(is.na(correct_txt), NA_character_, correct_txt),
+          Answer = ifelse(is.na(ans_deg), NA_character_, paste0(round(ans_deg, 3), " °")),
+          Error  = ifelse(!is.na(correct_txt) && correct_txt == "Correct",
+                          NA_character_,
+                          ifelse(is.na(err_deg), NA_character_, paste0(round(err_deg, 3), " °"))),
+          check.names = FALSE,
+          stringsAsFactors = FALSE
+        ))
+      }
     }
-    else {
-      # Calculate percentages
+    
+    # Render tables
+    output$cmp_table1 <- renderTable(ngts)
+    output$cmp_table2 <- renderTable(cores)
+    
+    # Legends
+    t <- ref_task_type
+    if (!is.na(t)) {
+      if (t == "nav-flag") t <- "Navigation to flag"
+      if (t == "nav-arrow") t <- "Navigation with arrow"
+      if (t == "nav-photo") t <- "Navigation via photo"
+      if (t == "nav-text") t <- "Navigation via text"
+      if (t == "theme-loc") t <- "Self location"
+      if (t == "theme-object") t <- "Object location"
+      if (t == "theme-direction") t <- "Direction determination"
+      if (t == "free") t <- "Free"
+      if (t == "info") t <- "Information"
+    } else {
+      t <- "Information"
+    }
+    
+    output$tabLegend   <- renderText({ paste("Task type:", t) })
+    output$graphLegend <- renderText({ paste("Task type:", t) })
+    
+    # ---------- Statistics outputs (pie + time chart) derived from SAME ngts ----------
+    # Pie (Correct vs Incorrect)
+    valid <- ngts$Correct %in% c("Correct", "Incorrect")
+    corr  <- sum(ngts$Correct[valid] == "Correct", na.rm = TRUE)
+    incorr<- sum(ngts$Correct[valid] == "Incorrect", na.rm = TRUE)
+    
+    if (corr == 0 && incorr == 0) {
+      pie_chart <- ggplot() + theme_void() + labs(title = "No comparable answers for this task")
+    } else {
+      df_pie <- data.frame(
+        Answers = c("Correct", "Incorrect"),
+        value   = c(corr, incorr),
+        stringsAsFactors = FALSE
+      )
       df_pie$percentage <- round(df_pie$value / sum(df_pie$value) * 100, 1)
       df_pie$label <- paste0(df_pie$Answers, ": ", df_pie$percentage, "%")
       
-      # Count how many players were selected
       num_players <- length(input$selected_multiple_files)
       
       pie_chart <- ggplot(df_pie, aes(x = "", y = value, fill = Answers)) +
         geom_col(width = 1) +
         coord_polar(theta = "y") +
-        geom_text(aes(label = label), 
-                  position = position_stack(vjust = 0.5), 
-                  color = "white", size = 5, fontface = "bold") +
-        scale_fill_manual(values = c("#3C8D53","#BE2A3E")) +
+        geom_text(aes(label = label), position = position_stack(vjust = 0.5),
+                  color = "BLACK", size = 5, fontface = "bold") +
+        scale_fill_manual(values = c("Correct" = "green", "Incorrect" = "red")) +
         theme_void() +
         labs(
           title = paste("Pie chart of task:", t),
@@ -2680,118 +2956,60 @@ server <- function(input, output, session) {
         )
     }
     
+    output$pie_chart  <- renderPlot({ pie_chart })
+    output$pie_chart2 <- renderPlot({ pie_chart })
     
-    #Two outputs because two conditions in UI
-    output$pie_chart <- renderPlot({
-      pie_chart
-    })
+    # Time vs distance scatter (uses same ngts table)
+    time_num <- suppressWarnings(as.numeric(sub(" s$", "", ngts$Time)))
+    dist_num <- suppressWarnings(as.numeric(sub(" m$", "", ngts$`Distance travelled`)))
     
-    output$pie_chart2 <- renderPlot({
-      pie_chart
-    })
+    df_player <- data.frame(
+      time = time_num,
+      distance = dist_num,
+      players = ngts$Name,
+      stringsAsFactors = FALSE
+    )
+    df_player <- df_player[is.finite(df_player$time) & is.finite(df_player$distance), , drop = FALSE]
     
-    #Download pie chart
+    if (!nrow(df_player)) {
+      time_chart <- ggplot() + theme_void() + labs(title = "No comparable trajectory data for this task")
+    } else {
+      time_chart <- ggplot(df_player, aes(x = time, y = distance, fill = players)) +
+        geom_point(size = 4, shape = 22) +
+        labs(title = paste("Time chart of task:", t),
+             x = "Time for this task in seconds",
+             y = "Distance travelled in metres")
+    }
+    
+    output$time_chart <- renderPlot({ time_chart })
+    
+    # Save charts
     output$save_picture <- downloadHandler(
-      filename = function(){
-        paste("pie_chart_", Sys.Date(), ".png", sep="")
-      },
-      content = function(file){
-        png(file)
-        print(pie_chart)
-        dev.off()
-      }
+      filename = function(){ paste0("pie_chart_", Sys.Date(), ".png") },
+      content  = function(file){ png(file); print(pie_chart); dev.off() }
     )
-    
     output$save_picture2 <- downloadHandler(
-      filename = function(){
-        paste("pie_chart_", Sys.Date(), ".png", sep="")
-      },
-      content = function(file){
-        png(file)
-        print(pie_chart)
-        dev.off()
-      }
+      filename = function(){ paste0("pie_chart_", Sys.Date(), ".png") },
+      content  = function(file){ png(file); print(pie_chart); dev.off() }
     )
     
-    #Delete the last column if it's empty 
-    counter <- 0
-    if (length(ngts) != 0) {
-      for (k in 1:length(ngts[,5])) { 
-        if (is.na(ngts[k,5])) {
-          counter <- counter + 1
-        }
-      }
-      if (counter == length(ngts[,5])) {
-        ngts <- select(ngts, -"Distance to the correct answer")
-      }
-    }
-    
-    
-    #TIME VS DISTANCE Table
-    output$cmp_table1 <- renderTable(
-      ngts
+    output$save_time_chart <- downloadHandler(
+      filename = function(){ paste0("time_chart_", Sys.Date(), ".png") },
+      content  = function(file){ png(file); print(time_chart); dev.off() }
     )
     
-    #CORRECT & ERRORS Table
-    output$cmp_table2 <- renderTable(
-      cores
-    )
-    
-    #Convert abbreviation for type task
-    if (!is.na(t)) {
-      if (t == "nav-flag") {
-        t <- "Navigation to flag"
-      }
-      if (t == "nav-arrow") {
-        t <- "Navigation with arrow"
-      }
-      if (t == "nav-photo") {
-        t <- "Navigation via photo"
-      }
-      if (t == "nav-text") {
-        t <- "Navigation via text"
-      }
-      if (t == "theme-loc") {
-        t <- "Self location"
-      }
-      if (t == "theme-object") {
-        t <- "Object location"
-      }
-      if (t == "theme-direction") {
-        t <- "Direction determination"
-      }
-      if (t == "free") {
-        t <- "Free"
-      }
-      if (t == "info") {
-        t <- "Information"
-      }
-      if (t == "") {
-        t <- "No task exists with this number"
-      }
-    }
-    
-    output$tabLegend <- renderText({paste("Task type:",t)})
-    output$graphLegend <- renderText({paste("Task type:",t)})
-    
-    #Save analyse tables
+    # Save CSVs
     output$save_table1 <- downloadHandler(
-      filename = function(){
-        paste("time_dist_table_", Sys.Date(), ".csv", sep="")
-      },
-      content = function(file){
-        write.csv(ngts, file)
-      }
+      filename = function(){ paste0("time_dist_table_", Sys.Date(), ".csv") },
+      content  = function(file){ write.csv(ngts, file, row.names = FALSE) }
+    )
+    output$save_table2 <- downloadHandler(
+      filename = function(){ paste0("ans_err_table_", Sys.Date(), ".csv") },
+      content  = function(file){ write.csv(cores, file, row.names = FALSE) }
     )
     
-    output$save_table2 <- downloadHandler(
-      filename = function(){
-        paste("ans_err_table_", Sys.Date(), ".csv", sep="")
-      },
-      content = function(file){
-        write.csv(cores, file)
-      }
-    )
+    
+    
   })
   
   
@@ -2916,6 +3134,27 @@ server <- function(input, output, session) {
       }
     }
     
+    # --- PATCH 4A: collect correctness + accuracy per task-final-row (same j's) ---
+    dist_correct <- list()
+    dist_acc_m   <- list()
+    
+    for (j in 1:(length(id) - 1)) {
+      if ((!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
+        
+        # correctness: prefer answer$correct, fallback to correct
+        cf <- try(data[[1]]$events$answer$correct[j], silent = TRUE)
+        if (inherits(cf, "try-error") || is.null(cf) || length(cf) == 0 || is.na(cf)) {
+          cf <- try(data[[1]]$events$correct[j], silent = TRUE)
+          if (inherits(cf, "try-error")) cf <- NA
+        }
+        dist_correct <- append(dist_correct, truthy(cf))
+        
+        # accuracy in meters for nav/distance tasks (15m fallback via helper)
+        dist_acc_m <- append(dist_acc_m, get_task_accuracy(data[[1]]$events, j, kind = "nav"))
+      }
+    }
+    # --- END PATCH 4A ---
+    
     
     #num <- function(x) suppressWarnings(as.numeric(x))
     
@@ -2978,13 +3217,28 @@ server <- function(input, output, session) {
     dist_num[mask_dir] <- deg_err[mask_dir]
     dist_num[mask_m]   <- d1m[mask_m]
     
-    dist_num <- round(dist_num, 2)
+    # --- PATCH 4B: manager rule for navigation error display ---
+    correct_vec <- as.logical(unlist(dist_correct))
+    acc_m_vec   <- suppressWarnings(as.numeric(unlist(dist_acc_m)))
+    
+    length(correct_vec) <- n
+    length(acc_m_vec)   <- n
     
     dist_txt <- rep(NA_character_, n)
-    dist_txt[mask_dir & !is.na(dist_num)] <- paste0(dist_num[mask_dir & !is.na(dist_num)], " °")
-    dist_txt[mask_m   & !is.na(dist_num)] <- paste0(dist_num[mask_m   & !is.na(dist_num)], " m")
+    
+    # Direction tasks: show error ONLY if incorrect / unknown
+    show_dir <- mask_dir & !is.na(deg_err) & (is.na(correct_vec) | correct_vec == FALSE)
+    dist_txt[show_dir] <- paste0(round(deg_err[show_dir], 2), " °")
+    
+    # Navigation/distance tasks: show blank if correct; else show (distance - accuracy)
+    nav_raw <- d1m
+    nav_err <- pmax(nav_raw - acc_m_vec, 0)
+    
+    show_nav <- mask_m & !is.na(nav_raw) & (is.na(correct_vec) | correct_vec == FALSE)
+    dist_txt[show_nav] <- paste0(round(nav_err[show_nav], 2), " m")
     
     dist <- dist_txt
+    # --- END PATCH 4B ---
     
     
     
@@ -3496,8 +3750,43 @@ server <- function(input, output, session) {
     
     
     
+    # if (!is.na(dir_ok_idx) && t == "theme-direction") {
+    #   evts <- data[[1]]$events
+    #   lon0 <- num(evts$position$coords$longitude[dir_ok_idx])
+    #   lat0 <- num(evts$position$coords$latitude[dir_ok_idx])
+    #   
+    #   ans_b <- get_answer_bearing(dir_ok_idx, evts)
+    #   cor_b <- get_correct_bearing(dir_ok_idx, evts)
+    #   
+    #   if (is.finite(lon0) && is.finite(lat0) && !is.na(ans_b)) {
+    #     A <- arrow_lines(lon0, lat0, ans_b)
+    #     
+    #     map_shown <- leaflet() %>%
+    #       addTiles() %>%
+    #       addMarkers(lng = lon0, lat = lat0, icon = loc_marker) %>%
+    #       addPolylines(lng = A$main$lng,  lat = A$main$lat) %>%
+    #       addPolylines(lng = A$left$lng,  lat = A$left$lat) %>%
+    #       addPolylines(lng = A$right$lng, lat = A$right$lat) %>%
+    #       setView(lng = lon0, lat = lat0, zoom = 19)
+    #     
+    #     if (!is.na(cor_b)) {
+    #       C <- arrow_lines(lon0, lat0, cor_b)
+    #       map_shown <- map_shown %>%
+    #         addPolylines(lng = C$main$lng,  lat = C$main$lat,  opacity = 0.6, dashArray = "5,5") %>%
+    #         addPolylines(lng = C$left$lng,  lat = C$left$lat,  opacity = 0.6, dashArray = "5,5") %>%
+    #         addPolylines(lng = C$right$lng, lat = C$right$lat, opacity = 0.6, dashArray = "5,5")
+    #     }
+    #     
+    #     mr <- FALSE  # ensure fallback doesn't blank it
+    #   }
+    # }
+    
+    
+    
+    
     if (!is.na(dir_ok_idx) && t == "theme-direction") {
       evts <- data[[1]]$events
+      
       lon0 <- num(evts$position$coords$longitude[dir_ok_idx])
       lat0 <- num(evts$position$coords$latitude[dir_ok_idx])
       
@@ -3505,25 +3794,29 @@ server <- function(input, output, session) {
       cor_b <- get_correct_bearing(dir_ok_idx, evts)
       
       if (is.finite(lon0) && is.finite(lat0) && !is.na(ans_b)) {
-        A <- arrow_lines(lon0, lat0, ans_b)
+        A <- arrow_lines(lon0, lat0, ans_b, len_m = 18, head_m = 5, head_ang = 25)
         
         map_shown <- leaflet() %>%
           addTiles() %>%
           addMarkers(lng = lon0, lat = lat0, icon = loc_marker) %>%
-          addPolylines(lng = A$main$lng,  lat = A$main$lat) %>%
-          addPolylines(lng = A$left$lng,  lat = A$left$lat) %>%
-          addPolylines(lng = A$right$lng, lat = A$right$lat) %>%
+          
+          
+          # Player FINAL answer arrow (BLUE)
+          addPolylines(lng = A$main$lng,  lat = A$main$lat,  color = "blue",  weight = 4, opacity = 1) %>%
+          addPolylines(lng = A$left$lng,  lat = A$left$lat,  color = "blue",  weight = 4, opacity = 1) %>%
+          addPolylines(lng = A$right$lng, lat = A$right$lat, color = "blue",  weight = 4, opacity = 1) %>%
           setView(lng = lon0, lat = lat0, zoom = 19)
         
+        # Correct direction arrow (GREEN) - optional
         if (!is.na(cor_b)) {
-          C <- arrow_lines(lon0, lat0, cor_b)
+          C <- arrow_lines(lon0, lat0, cor_b, len_m = 18, head_m = 5, head_ang = 25)
           map_shown <- map_shown %>%
-            addPolylines(lng = C$main$lng,  lat = C$main$lat,  opacity = 0.6, dashArray = "5,5") %>%
-            addPolylines(lng = C$left$lng,  lat = C$left$lat,  opacity = 0.6, dashArray = "5,5") %>%
-            addPolylines(lng = C$right$lng, lat = C$right$lat, opacity = 0.6, dashArray = "5,5")
+            addPolylines(lng = C$main$lng,  lat = C$main$lat,  color = "green", weight = 4, opacity = 0.9) %>%
+            addPolylines(lng = C$left$lng,  lat = C$left$lat,  color = "green", weight = 4, opacity = 0.9) %>%
+            addPolylines(lng = C$right$lng, lat = C$right$lat, color = "green", weight = 4, opacity = 0.9)
         }
         
-        mr <- FALSE  # ensure fallback doesn't blank it
+        mr <- FALSE
       }
     }
     
@@ -3921,24 +4214,27 @@ server <- function(input, output, session) {
       # 
       
       #photo code starts---------------------
-    cou <- 1 #counter
+    cou <- 1
     pict <- list()
     ans_photo <- list()
     
-    for (i in 1:(length(id)-1)) {
+    for (i in 1:(length(id) - 1)) {
       if ((!is.na(id[i]) && (i != 1) && (id[i] != id[i + 1])) || i == (length(id) - 1)) {
         cou <- cou + 1
-        pict <- append(pict, unlist(data[[1]]$events$task$question$photo[[i]]))
-        ans_photo <- append(ans_photo, unlist(data[[1]]$events$answer$photo[[i]]))
+        
+        pict <- append(pict, safe_photo_at(data[[1]]$events$task$question$photo, i))
+        ans_photo <- append(ans_photo, safe_photo_at(data[[1]]$events$answer$photo, i))
       }
     }
+    
     
     if (length(pict) != 0) { #Photos in assignment
       if (num_value_num() <= length(pict) && !is.na(pict[[num_value_num()]]) && pict[[num_value_num()]] != "") {
         # Render photo display with download buttons
         output$photo_display <- renderUI({
           
-          photo_url <- pict[[num_value_num()]]
+          photo_url <- trimws(pict[[num_value_num()]])
+          
           
           output[["download_image"]] <- downloadHandler(
             filename = function() {
