@@ -2106,19 +2106,31 @@ server <- function(input, output, session) {
       req(df_react())
       df <- df_react()
       
-      task_ids <- seq_len(nrow(df))   # use row numbers as task IDs
+      task_ids <- as.character(seq_len(nrow(df)))   # row numbers used in All tasks tab
+      
+      # preserve previous selection when switching player
+      prev_selected <- isolate(input$selected_task_ids)
+      prev_selected <- as.character(prev_selected)
+      
+      # keep only those that still exist for the newly selected player
+      selected_ids <- intersect(prev_selected, task_ids)
+      
+      # if nothing valid remains, fall back to all
+      if (length(selected_ids) == 0) {
+        selected_ids <- task_ids
+      }
       
       tagList(
         pickerInput(
           "selected_task_ids",
           "Filter by Task ID:",
           choices = task_ids,
-          selected = task_ids,   # initially all
+          selected = selected_ids,
           multiple = TRUE,
           options = list(
             `actions-box` = TRUE,
             `live-search` = FALSE,
-            `none-selected-text` = "Filter by Task ID: ",
+            `none-selected-text` = "Filter by Task ID:",
             `width` = '100%',
             container = FALSE,
             size = 10
@@ -3625,19 +3637,31 @@ server <- function(input, output, session) {
       req(df_react())
       df <- df_react()
       
-      task_ids <- seq_len(nrow(df))   # use row numbers as task IDs
+      task_ids <- as.character(seq_len(nrow(df)))   # row numbers used in All tasks tab
+      
+      # preserve previous selection when switching player
+      prev_selected <- isolate(input$selected_task_ids)
+      prev_selected <- as.character(prev_selected)
+      
+      # keep only those that still exist for the newly selected player
+      selected_ids <- intersect(prev_selected, task_ids)
+      
+      # if nothing valid remains, fall back to all
+      if (length(selected_ids) == 0) {
+        selected_ids <- task_ids
+      }
       
       tagList(
         pickerInput(
           "selected_task_ids",
           "Filter by Task ID:",
           choices = task_ids,
-          selected = task_ids,   # initially all
+          selected = selected_ids,
           multiple = TRUE,
           options = list(
             `actions-box` = TRUE,
             `live-search` = FALSE,
-            `none-selected-text` = "Filter by Task ID: ",
+            `none-selected-text` = "Filter by Task ID:",
             `width` = '100%',
             container = FALSE,
             size = 10
