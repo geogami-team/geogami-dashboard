@@ -1022,6 +1022,22 @@ server <- function(input, output, session) {
   choices_rv <- reactiveVal() #FOR ENSURING THAT RIGHT NAME IS REFLECTED IN SELECTIZEINPUT INSTEAD OF MONGO DB IDs
   
   
+  #### only players selected on left should appear on right *starts) #####
+  
+  filtered_choices_r <- reactive({
+    req(choices_rv())
+    req(input$selected_files)
+    
+    all_choices <- choices_rv()
+    sel <- input$selected_files
+    
+    # keep only players currently selected in the left sidebar
+    all_choices[all_choices %in% sel]
+  })
+  #### only players selected on left should appear on right *ends) #####
+  
+  
+  
   apiURL_rv <- reactiveVal("https://api.geogami.uni-muenster.de")
   
   # Observe the URL query string for the token parameter
@@ -1282,24 +1298,27 @@ server <- function(input, output, session) {
   
   # 6. Select single file to view
   output$file_selector_ui <- renderUI({
+    req(filtered_choices_r())
     
-    req(choices_rv())  # ensuring here that the choices are ready
+    choices_now <- filtered_choices_r()
     
-    req(input$selected_files)
+    cur <- isolate(input$selected_data_file)
+    selected_now <- if (!is.null(cur) && cur %in% choices_now) cur else choices_now[1]
     
-    pickerInput("selected_data_file",
-                "Selected Players:",
-                choices = choices_rv(),
-                selected = input$selected_files[1],
-                multiple = FALSE,
-                options = list(
-                  `actions-box` = FALSE,
-                  `live-search` = FALSE,
-                  `none-selected-text` = "Select a player",
-                  `width` = '100%',
-                  container = FALSE,
-                  size = 10
-                )
+    pickerInput(
+      "selected_data_file",
+      "Selected Players:",
+      choices = choices_now,
+      selected = selected_now,
+      multiple = FALSE,
+      options = list(
+        `actions-box` = FALSE,
+        `live-search` = FALSE,
+        `none-selected-text` = "Select a player",
+        `width` = '100%',
+        container = FALSE,
+        size = 10
+      )
     )
   })
   
@@ -1397,17 +1416,20 @@ server <- function(input, output, session) {
   ### 9. UI: multiple file selector for comparison (tables, graphics, maps, photos)
   # UI for Compare Players - with select/deselect buttons
   output$file_selector_ui1 <- renderUI({
+    req(filtered_choices_r())
     
-    req(choices_rv())  # ensuring here that the choices are ready
+    choices_now <- filtered_choices_r()
     
-    req(input$selected_files)
+    cur <- isolate(input$selected_multiple_files)
+    selected_now <- intersect(cur, choices_now)
+    if (length(selected_now) == 0) selected_now <- choices_now
     
     tagList(
       pickerInput(
-        "selected_multiple_files", 
-        "Selected Players:", 
-        choices = choices_rv(),
-        selected = input$selected_files,
+        "selected_multiple_files",
+        "Selected Players:",
+        choices = choices_now,
+        selected = selected_now,
         multiple = TRUE,
         options = list(
           `actions-box` = FALSE,
@@ -1418,10 +1440,6 @@ server <- function(input, output, session) {
           size = 10
         )
       )
-      # ,
-      # # Add select/deselect buttons
-      # actionButton("select_all_players", "Select All"),
-      # actionButton("deselect_all_players", "Select None")
     )
   })
   
@@ -1453,17 +1471,20 @@ server <- function(input, output, session) {
   
   ##### Filters for comparing Graphics starts
   output$file_selector_ui2 <- renderUI({
+    req(filtered_choices_r())
     
-    req(choices_rv())  # ensuring here that the choices are ready
+    choices_now <- filtered_choices_r()
     
-    req(input$selected_files)
+    cur <- isolate(input$selected_multiple_files)
+    selected_now <- intersect(cur, choices_now)
+    if (length(selected_now) == 0) selected_now <- choices_now
     
     tagList(
       pickerInput(
-        "selected_multiple_files",  
-        "Selected Players:", 
-        choices = choices_rv(),
-        selected = input$selected_files,
+        "selected_multiple_files",
+        "Selected Players:",
+        choices = choices_now,
+        selected = selected_now,
         multiple = TRUE,
         options = list(
           `actions-box` = FALSE,
@@ -1483,46 +1504,54 @@ server <- function(input, output, session) {
   
   ##### Filter for maps
   output$file_selector_ui3 <- renderUI({
+    req(filtered_choices_r())
     
-    req(choices_rv())  # ensuring here that the choices are ready
+    choices_now <- filtered_choices_r()
     
-    req(input$selected_files)
+    cur <- isolate(input$selected_data_file)
+    selected_now <- if (!is.null(cur) && cur %in% choices_now) cur else choices_now[1]
     
-    pickerInput("selected_data_file",
-                "Selected Players: ",
-                choices = choices_rv(),
-                selected = input$selected_files[1],
-                multiple = FALSE,
-                options = list(
-                  `actions-box` = FALSE,
-                  `live-search` = FALSE,
-                  `none-selected-text` = "Select a player",
-                  `width` = '100%',
-                  container = FALSE,
-                  size = 10
-                ))
+    pickerInput(
+      "selected_data_file",
+      "Selected Players: ",
+      choices = choices_now,
+      selected = selected_now,
+      multiple = FALSE,
+      options = list(
+        `actions-box` = FALSE,
+        `live-search` = FALSE,
+        `none-selected-text` = "Select a player",
+        `width` = '100%',
+        container = FALSE,
+        size = 10
+      )
+    )
   })
   
   ##### Filter for photos
   output$file_selector_ui4 <- renderUI({
+    req(filtered_choices_r())
     
-    req(choices_rv())  # ensuring here that the choices are ready
+    choices_now <- filtered_choices_r()
     
-    req(input$selected_files)
+    cur <- isolate(input$selected_data_file)
+    selected_now <- if (!is.null(cur) && cur %in% choices_now) cur else choices_now[1]
     
-    pickerInput("selected_data_file",
-                "Selected Players: ",
-                choices = choices_rv(),
-                selected = input$selected_files[1],
-                multiple = FALSE,
-                options = list(
-                  `actions-box` = FALSE,
-                  `live-search` = FALSE,
-                  `none-selected-text` = "Select a player",
-                  `width` = '100%',
-                  container = FALSE,
-                  size = 10
-                ))
+    pickerInput(
+      "selected_data_file",
+      "Selected Players: ",
+      choices = choices_now,
+      selected = selected_now,
+      multiple = FALSE,
+      options = list(
+        `actions-box` = FALSE,
+        `live-search` = FALSE,
+        `none-selected-text` = "Select a player",
+        `width` = '100%',
+        container = FALSE,
+        size = 10
+      )
+    )
   })
   
   #####Big table code
@@ -2106,19 +2135,31 @@ server <- function(input, output, session) {
       req(df_react())
       df <- df_react()
       
-      task_ids <- seq_len(nrow(df))   # use row numbers as task IDs
+      task_ids <- as.character(seq_len(nrow(df)))   # row numbers used in All tasks tab
+      
+      # preserve previous selection when switching player
+      prev_selected <- isolate(input$selected_task_ids)
+      prev_selected <- as.character(prev_selected)
+      
+      # keep only those that still exist for the newly selected player
+      selected_ids <- intersect(prev_selected, task_ids)
+      
+      # if nothing valid remains, fall back to all
+      if (length(selected_ids) == 0) {
+        selected_ids <- task_ids
+      }
       
       tagList(
         pickerInput(
           "selected_task_ids",
           "Filter by Task ID:",
           choices = task_ids,
-          selected = task_ids,   # initially all
+          selected = selected_ids,
           multiple = TRUE,
           options = list(
             `actions-box` = TRUE,
             `live-search` = FALSE,
-            `none-selected-text` = "Filter by Task ID: ",
+            `none-selected-text` = "Filter by Task ID:",
             `width` = '100%',
             container = FALSE,
             size = 10
@@ -3625,19 +3666,31 @@ server <- function(input, output, session) {
       req(df_react())
       df <- df_react()
       
-      task_ids <- seq_len(nrow(df))   # use row numbers as task IDs
+      task_ids <- as.character(seq_len(nrow(df)))   # row numbers used in All tasks tab
+      
+      # preserve previous selection when switching player
+      prev_selected <- isolate(input$selected_task_ids)
+      prev_selected <- as.character(prev_selected)
+      
+      # keep only those that still exist for the newly selected player
+      selected_ids <- intersect(prev_selected, task_ids)
+      
+      # if nothing valid remains, fall back to all
+      if (length(selected_ids) == 0) {
+        selected_ids <- task_ids
+      }
       
       tagList(
         pickerInput(
           "selected_task_ids",
           "Filter by Task ID:",
           choices = task_ids,
-          selected = task_ids,   # initially all
+          selected = selected_ids,
           multiple = TRUE,
           options = list(
             `actions-box` = TRUE,
             `live-search` = FALSE,
-            `none-selected-text` = "Filter by Task ID: ",
+            `none-selected-text` = "Filter by Task ID:",
             `width` = '100%',
             container = FALSE,
             size = 10
