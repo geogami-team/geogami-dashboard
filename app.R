@@ -695,6 +695,124 @@ server <- function(input, output, session) {
   ######## ENDS- PHoto code error - subscript out of bounds CORRECTION #########
   
   
+  ########### MAP AND PICTURES - TASKS SELECTION - APPEAR GREY OUT WHEN NOT AVAILABLE - START #########
+  has_real_photo <- function(x) {
+    if (is.null(x) || length(x) == 0) return(FALSE)
+    x <- as.character(x[1])
+    !is.na(x) && nzchar(trimws(x))
+  }
+  
+  task_choice_styles <- function(track, n_tasks = NULL) {
+    if (is.null(track) || is.null(track$events)) {
+      return(list(pic_grey = logical(0), map_grey = logical(0)))
+    }
+    
+    evts <- track$events
+    sl <- task_slices_by_init_safe(evts)
+    if (!nrow(sl)) {
+      return(list(pic_grey = logical(0), map_grey = logical(0)))
+    }
+    
+    pic_grey <- rep(FALSE, nrow(sl))
+    map_grey <- rep(FALSE, nrow(sl))
+    
+    for (k in seq_len(nrow(sl))) {
+      block <- sl$start[k]:sl$end[k]
+      s <- sl$start[k]
+      
+      # ----- Pictures tab: grey if NO assignment photo and NO answer photo -----
+      q_has <- any(vapply(block, function(i) {
+        has_real_photo(safe_photo_at(evts$task$question$photo, i))
+      }, logical(1)))
+      
+      a_has <- any(vapply(block, function(i) {
+        has_real_photo(safe_photo_at(evts$answer$photo, i))
+      }, logical(1)))
+      
+      pic_grey[k] <- !(q_has || a_has)
+      
+      # ----- Map tab: grey if information task OR free task -----
+      task_cat <- try(evts$task$category[s], silent = TRUE)
+      task_cat <- if (inherits(task_cat, "try-error") || is.null(task_cat) || length(task_cat) == 0) {
+        NA_character_
+      } else {
+        as.character(task_cat[1])
+      }
+      
+      task_type <- try(evts$task$type[s], silent = TRUE)
+      task_type <- if (inherits(task_type, "try-error") || is.null(task_type) || length(task_type) == 0) {
+        NA_character_
+      } else {
+        as.character(task_type[1])
+      }
+      
+      map_grey[k] <- (!is.na(task_cat) && task_cat == "info") ||
+        (!is.na(task_type) && task_type == "free")
+    }
+    
+    if (!is.null(n_tasks)) {
+      length(pic_grey) <- n_tasks
+      length(map_grey) <- n_tasks
+      
+      pic_grey[is.na(pic_grey)] <- FALSE
+      map_grey[is.na(map_grey)] <- FALSE
+    }
+    
+    list(pic_grey = pic_grey, map_grey = map_grey)
+  }
+  
+  update_main_task_pickers <- function(session, track, n_tasks, selected) {
+    if (is.null(n_tasks) || n_tasks <= 0) return()
+    
+    choice_vec <- as.character(seq_len(n_tasks))
+    selected <- as.character(selected)
+    
+    grey_css <- "color: #9aa0a6 !important; background-color: #f3f4f6 !important;"
+    
+    styles <- task_choice_styles(track, n_tasks)
+    
+    # Map picker: grey only info/free tasks
+    updatePickerInput(
+      session = session,
+      inputId = "num_value",
+      choices = choice_vec,
+      selected = selected,
+      choicesOpt = list(
+        style = ifelse(styles$map_grey, grey_css, "")
+      )
+    )
+    
+    # Pictures picker: grey tasks with no photos
+    updatePickerInput(
+      session = session,
+      inputId = "num_value_pictures",
+      choices = choice_vec,
+      selected = selected,
+      choicesOpt = list(
+        style = ifelse(styles$pic_grey, grey_css, "")
+      )
+    )
+    
+    # Other synced pickers stay normal
+    updatePickerInput(
+      session = session,
+      inputId = "num_value_comparison",
+      choices = choice_vec,
+      selected = selected
+    )
+    
+    updatePickerInput(
+      session = session,
+      inputId = "num_value_Statistics",
+      choices = choice_vec,
+      selected = selected
+    )
+  }
+  ########### MAP AND PICTURES - TASKS SELECTION - APPEAR GREY OUT WHEN NOT AVAILABLE - END #########
+  
+  
+  
+  
   
   ##########starting - CORRECTING COMPARE TASKS TAB ---MAKING HELPER FUNCTIONS FOR THAT############
   task_slices_by_init <- function(evts) {
@@ -2103,19 +2221,15 @@ server <- function(input, output, session) {
       if (is.null(df) || nrow(df) == 0) return()
       
       n <- nrow(df)
-      
-      # try to preserve current Map selection if valid; otherwise default to 1
       cur <- suppressWarnings(as.integer(input$num_value))
       if (is.na(cur) || cur < 1 || cur > n) cur <- 1
       
-      # choices are strings for pickerInput
-      choice_vec <- as.character(seq_len(n))
-      sel <- as.character(cur)
-      
-      # Push the SAME choices + selected to all four pickers
-      for (id in all_ids) {
-        updatePickerInput(session, id, choices = choice_vec, selected = sel)
-      }
+      update_main_task_pickers(
+        session = session,
+        track = data[[1]],
+        n_tasks = n,
+        selected = cur
+      )
     })
     ###############----------Task IDs updation all 4 STARTS-------------################
     
@@ -2884,7 +2998,6 @@ server <- function(input, output, session) {
       hit <- sm[sm$task_id == ref_task_id, , drop = FALSE]
       
       if (!nrow(hit)) {
-        # task not played
         ngts <- rbind(ngts, data.frame(
           Name = nm,
           Correct = "Task not played",
@@ -3638,19 +3751,15 @@ server <- function(input, output, session) {
       if (is.null(df) || nrow(df) == 0) return()
       
       n <- nrow(df)
-      
-      # preserving current Map selection if valid; otherwise default to 1
       cur <- suppressWarnings(as.integer(input$num_value))
       if (is.na(cur) || cur < 1 || cur > n) cur <- 1
       
-      # choices are strings for pickerInput
-      choice_vec <- as.character(seq_len(n))
-      sel <- as.character(cur)
-      
-      # Push the SAME choices + selected to all four pickers
-      for (id in all_ids) {
-        updatePickerInput(session, id, choices = choice_vec, selected = sel)
-      }
+      update_main_task_pickers(
+        session = session,
+        track = data[[1]],
+        n_tasks = n,
+        selected = cur
+      )
     })
     ###############----------Task IDs updation all 4 STARTS-------------################
     
