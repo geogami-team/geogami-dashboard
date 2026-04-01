@@ -1089,6 +1089,7 @@ server <- function(input, output, session) {
         taskNo = sl$taskNo[k],
         task_id = task_id,
         task_type = task_type,
+        assignment = assignment,
         category = task_cat,
         start_idx = s,
         end_idx = e,
@@ -1114,12 +1115,109 @@ server <- function(input, output, session) {
   
   # -------------------- END CANONICAL TASK SUMMARY --------------------
   
+  #######HELPER FUNCTION FOR CLEANLY EXPORTING AND DOWNLOADING THE CSV (USED FOR THE FUNCTION BELOW THAT IS 'BUILD_BIG_TABLE_EXPORT') - START ######
+  clean_export_text <- function(x) {
+    x <- as.character(x)
+    x <- gsub("[\r\n]+", " ", x)
+    x <- gsub("\\s{2,}", " ", x)
+    trimws(x)
+  }
+  #######HELPER FUNCTION FOR CLEANLY EXPORTING AND DOWNLOADING THE CSV (USED FOR THE FUNCTION BELOW THAT IS 'BUILD_BIG_TABLE_EXPORT') - END ######
   
   
   
+  ######## MAKING HELPER FUNCTION FOR ADDING THE NEW DOWNLOAD BUTTON IN BIG TABLE 'SAVE ALL TO CSV' START #############
+  pretty_task_type <- function(x) {
+    x <- as.character(x)
+    
+    if (length(x) == 0 || is.na(x) || x == "") return("information")
+    
+    switch(
+      x,
+      "nav-flag" = "Navigation to flag",
+      "nav-arrow" = "Navigation with arrow",
+      "nav-photo" = "Navigation via photo",
+      "nav-text" = "Navigation via text",
+      "theme-loc" = "Self location",
+      "theme-object" = "Object location",
+      "theme-direction" = "Direction determination",
+      "free" = "Free",
+      "info" = "Information",
+      x
+    )
+  }
+  
+  build_big_table_export_df <- function(track) {
+    sm <- task_summary(track)
+    
+    if (is.null(sm) || nrow(sm) == 0) {
+      return(data.frame())
+    }
+    
+    df <- data.frame(
+      `Task ID` = sm$taskNo,
+      Type = vapply(sm$task_type, pretty_task_type, character(1)),
+      Assignment = clean_export_text(sm$assignment),
+      Answer = clean_export_text(sm$answer_txt),
+      Time = ifelse(is.na(sm$time_s), NA_character_, paste0(sm$time_s, " s")),
+      Tries = sm$tries,
+      check.names = FALSE,
+      stringsAsFactors = FALSE
+    )
+    
+    df[["Error in °/m"]] <- sm$error_txt
+    
+    info_mask <- tolower(trimws(df$Type)) == "information"
+    df$Answer[info_mask] <- NA_character_
+    df$Tries[info_mask] <- 0
+    df[["Error in °/m"]][info_mask] <- NA_character_
+    
+    df
+  }
+  
+  apply_task_id_filter_export <- function(df, selected_task_ids) {
+    if (is.null(df) || nrow(df) == 0) return(df)
+    
+    if (is.null(selected_task_ids) || length(selected_task_ids) == 0) {
+      return(df)
+    }
+    
+    df[as.character(df[["Task ID"]]) %in% as.character(selected_task_ids), , drop = FALSE]
+  }
+  ######## MAKING HELPER FUNCTION FOR ADDING THE NEW DOWNLOAD BUTTON IN BIG TABLE 'SAVE ALL TO CSV' END #############
   
   
   
+  ############ SAVED CSVS ENCODING ISSUE -- GERMAN CHARACTERS --- STARTS #####################
+  
+  write_csv_excel_utf8 <- function(df, file, na = "NA") {
+    if (is.null(df)) df <- data.frame()
+    
+    names(df) <- enc2utf8(names(df))
+    char_cols <- vapply(df, is.character, logical(1))
+    if (any(char_cols)) {
+      df[char_cols] <- lapply(df[char_cols], enc2utf8)
+    }
+    
+    con <- file(file, open = "wb")
+    writeBin(as.raw(c(0xEF, 0xBB, 0xBF)), con)
+    close(con)
+    
+    utils::write.table(
+      df,
+      file = file,
+      sep = ",",
+      row.names = FALSE,
+      col.names = TRUE,
+      na = na,
+      quote = TRUE,
+      qmethod = "double",
+      append = TRUE,
+      fileEncoding = "UTF-8",
+      eol = "\r\n"
+    )
+  }
+  ############ SAVED CSVS ENCODING ISSUE -- GERMAN CHARACTERS --- ENDS  #####################
   
   
   
@@ -2321,16 +2419,137 @@ server <- function(input, output, session) {
         paste("data_", Sys.Date(), ".csv", sep = "")
       },
       content = function(file){
-        # use the filtered reactive df
-        write.csv(filtered_df(), file, row.names = FALSE)
+        df_out <- filtered_df()
+        
+        if (!is.null(df_out) && nrow(df_out) > 0) {
+          if ("Assignment" %in% names(df_out)) {
+            df_out$Assignment <- clean_export_text(df_out$Assignment)
+          }
+          if ("Answer" %in% names(df_out)) {
+            df_out$Answer <- clean_export_text(df_out$Answer)
+          }
+        }
+        
+        write_csv_excel_utf8(df_out, file, na = "NA")
       }
     )
+    
+    ########NEW DOWNLOAD BUTTON FOR ALL TASKS BIG TABLE - 'SAVE ALL TO CSV' starts########
+    output$save_all_data <- downloadHandler(
+      filename = function() {
+        games_map <- games_choices_rv()
+        game_name <- "geogami_game"
+        
+        if (!is.null(games_map) && length(games_map) > 0 && !is.null(input$selected_games)) {
+          idx <- which(games_map == input$selected_games)
+          if (length(idx) > 0) {
+            game_name <- names(games_map)[idx[1]]
+          }
+        }
+        
+        game_name <- gsub("[^A-Za-z0-9_\\-]", "_", game_name)
+        paste0(game_name, "_all_tasks_", Sys.Date(), ".csv")
+      },
+      
+      content = function(file) {
+        req(input$selected_files)
+        req(accessToken_rv())
+        req(apiURL_rv())
+        
+        selected_task_ids_now <- input$selected_task_ids
+        player_blocks <- list()
+        
+        for (track_id in input$selected_files) {
+          url <- paste0(apiURL_rv(), "/track/", track_id)
+          tr <- fetch_games_data_from_server(url, accessToken_rv())
+          
+          if (is.null(tr)) next
+          
+          if (!is.null(tr$events)) {
+            tr$events <- fix_vr_distance_tasks(tr$events)
+            tr$events <- fix_direction_tasks(tr$events)
+          }
+          
+          df_one <- build_big_table_export_df(tr)
+          if (nrow(df_one) == 0) next
+          
+          df_one <- apply_task_id_filter_export(df_one, selected_task_ids_now)
+          if (nrow(df_one) == 0) next
+          
+          player_name <- if (!is.null(tr$players) && length(tr$players) > 0) {
+            as.character(tr$players[1])
+          } else {
+            NA_character_
+          }
+          
+          created_at <- if (!is.null(tr$createdAt) && length(tr$createdAt) > 0) {
+            as.character(tr$createdAt[1])
+          } else {
+            NA_character_
+          }
+          
+          df_one <- data.frame(
+            Player = player_name,
+            `Created At` = created_at,
+            df_one,
+            check.names = FALSE,
+            stringsAsFactors = FALSE
+          )
+          
+          player_blocks[[length(player_blocks) + 1]] <- df_one
+        }
+        
+        if (length(player_blocks) == 0) {
+          write_csv_excel_utf8(data.frame(), file, na = "NA")
+          return()
+        }
+        
+        # Write UTF-8 BOM once
+        con <- file(file, open = "wb")
+        writeBin(as.raw(c(0xEF, 0xBB, 0xBF)), con)
+        close(con)
+        
+        for (i in seq_along(player_blocks)) {
+          # Add exactly 2 blank lines BETWEEN players
+          if (i > 1) {
+            cat("\r\n\r\n", file = file, append = TRUE)
+          }
+          
+          utils::write.table(
+            player_blocks[[i]],
+            file = file,
+            sep = ",",
+            row.names = FALSE,
+            col.names = (i == 1),
+            na = "NA",
+            quote = TRUE,
+            qmethod = "double",
+            append = TRUE,
+            fileEncoding = "UTF-8",
+            eol = "\r\n"
+          )
+        }
+      }
+    )
+    ########NEW DOWNLOAD BUTTON FOR ALL TASKS BIG TABLE - 'SAVE ALL TO CSV' ENDS ########
+    
+    
+    
+    
     
     output$save_big_table <- renderUI({
       req(filtered_df())
       
       if (nrow(filtered_df()) > 0) {
-        downloadButton('save_data', 'Save to CSV')
+        tagList(
+          div(
+            style = "display: flex; gap: 10px; align-items: center; flex-wrap: wrap;",
+            downloadButton('save_data', 'Save to CSV'),
+            if (!is.null(input$selected_files) && length(input$selected_files) > 0) {
+              downloadButton('save_all_data', 'Save all to CSV')
+            }
+          )
+        )
       }
     })
     
@@ -3155,11 +3374,11 @@ server <- function(input, output, session) {
     # Save CSVs
     output$save_table1 <- downloadHandler(
       filename = function(){ paste0("time_dist_table_", Sys.Date(), ".csv") },
-      content  = function(file){ write.csv(ngts, file, row.names = FALSE) }
+      content  = function(file){ write_csv_excel_utf8(ngts, file, na = "NA") }
     )
     output$save_table2 <- downloadHandler(
       filename = function(){ paste0("ans_err_table_", Sys.Date(), ".csv") },
-      content  = function(file){ write.csv(cores, file, row.names = FALSE) }
+      content  = function(file){ write_csv_excel_utf8(cores, file, na = "NA") }
     )
     
     
@@ -3847,8 +4066,18 @@ server <- function(input, output, session) {
         paste("data_", Sys.Date(), ".csv", sep = "")
       },
       content = function(file){
-        # use the filtered reactive df
-        write.csv(filtered_df(), file, row.names = FALSE)
+        df_out <- filtered_df()
+        
+        if (!is.null(df_out) && nrow(df_out) > 0) {
+          if ("Assignment" %in% names(df_out)) {
+            df_out$Assignment <- clean_export_text(df_out$Assignment)
+          }
+          if ("Answer" %in% names(df_out)) {
+            df_out$Answer <- clean_export_text(df_out$Answer)
+          }
+        }
+        
+        write_csv_excel_utf8(df_out, file, na = "NA")
       }
     )
     
