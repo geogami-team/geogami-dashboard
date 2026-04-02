@@ -2415,10 +2415,21 @@ server <- function(input, output, session) {
     
     # Download filtered big table
     output$save_data <- downloadHandler(
-      filename = function(){
-        paste("data_", Sys.Date(), ".csv", sep = "")
+      filename = function() {
+        player_name <- "player"
+        
+        tr <- track_data_rv()
+        if (!is.null(tr) && !is.list(tr[[1]]) && !is.null(tr$players) && length(tr$players) > 0) {
+          player_name <- as.character(tr$players[1])
+        } else if (!is.null(tr) && !is.null(tr$players) && length(tr$players) > 0) {
+          player_name <- as.character(tr$players[1])
+        }
+        
+        player_name <- gsub("[^A-Za-z0-9_\\-]", "_", player_name)
+        paste0(player_name, "_", Sys.Date(), ".csv")
       },
-      content = function(file){
+      
+      content = function(file) {
         df_out <- filtered_df()
         
         if (!is.null(df_out) && nrow(df_out) > 0) {
@@ -2428,6 +2439,39 @@ server <- function(input, output, session) {
           if ("Answer" %in% names(df_out)) {
             df_out$Answer <- clean_export_text(df_out$Answer)
           }
+        }
+        
+        # get game name
+        games_map <- games_choices_rv()
+        game_name <- NA_character_
+        
+        if (!is.null(games_map) && length(games_map) > 0 && !is.null(input$selected_games)) {
+          idx <- which(games_map == input$selected_games)
+          if (length(idx) > 0) {
+            game_name <- names(games_map)[idx[1]]
+          }
+        }
+        
+        if (is.null(game_name) || length(game_name) == 0 || is.na(game_name)) {
+          game_name <- "Unknown Game"
+        }
+        
+        # get player name
+        player_name <- NA_character_
+        tr <- track_data_rv()
+        if (!is.null(tr) && !is.null(tr$players) && length(tr$players) > 0) {
+          player_name <- as.character(tr$players[1])
+        }
+        
+        # prepend columns
+        if (!is.null(df_out) && nrow(df_out) > 0) {
+          df_out <- data.frame(
+            Game = game_name,
+            Player = player_name,
+            df_out,
+            check.names = FALSE,
+            stringsAsFactors = FALSE
+          )
         }
         
         write_csv_excel_utf8(df_out, file, na = "NA")
@@ -4078,10 +4122,19 @@ server <- function(input, output, session) {
     
     #DOWNLOAD FILTERED BIG TABLE - FOR SINGLE FILE UPLOAD..STARTS-----------------------------
     output$save_data <- downloadHandler(
-      filename = function(){
-        paste("data_", Sys.Date(), ".csv", sep = "")
+      filename = function() {
+        player_name <- "player"
+        
+        data_now <- uploaded_json()
+        if (!is.null(data_now) && length(data_now) > 0 && !is.null(data_now[[1]]$players) && length(data_now[[1]]$players) > 0) {
+          player_name <- as.character(data_now[[1]]$players[1])
+        }
+        
+        player_name <- gsub("[^A-Za-z0-9_\\-]", "_", player_name)
+        paste0(player_name, "_", Sys.Date(), ".csv")
       },
-      content = function(file){
+      
+      content = function(file) {
         df_out <- filtered_df()
         
         if (!is.null(df_out) && nrow(df_out) > 0) {
@@ -4091,6 +4144,29 @@ server <- function(input, output, session) {
           if ("Answer" %in% names(df_out)) {
             df_out$Answer <- clean_export_text(df_out$Answer)
           }
+        }
+        
+        data_now <- uploaded_json()
+        
+        game_name <- if (!is.null(input$selected_games) && nzchar(input$selected_games)) {
+          as.character(input$selected_games)
+        } else {
+          "Uploaded JSON"
+        }
+        
+        player_name <- NA_character_
+        if (!is.null(data_now) && length(data_now) > 0 && !is.null(data_now[[1]]$players) && length(data_now[[1]]$players) > 0) {
+          player_name <- as.character(data_now[[1]]$players[1])
+        }
+        
+        if (!is.null(df_out) && nrow(df_out) > 0) {
+          df_out <- data.frame(
+            Game = game_name,
+            Player = player_name,
+            df_out,
+            check.names = FALSE,
+            stringsAsFactors = FALSE
+          )
         }
         
         write_csv_excel_utf8(df_out, file, na = "NA")
