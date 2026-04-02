@@ -1220,6 +1220,35 @@ server <- function(input, output, session) {
   ############ SAVED CSVS ENCODING ISSUE -- GERMAN CHARACTERS --- ENDS  #####################
   
   
+  ####### starts - MAKING HELPER FUNCTION TO CORRECT THE COMPARE PLAYERS TAB - CSV FILE DOWNLOAD#########
+  get_selected_game_name <- function() {
+    games_map <- games_choices_rv()
+    game_name <- NA_character_
+    
+    if (!is.null(games_map) && length(games_map) > 0 && !is.null(input$selected_games)) {
+      idx <- which(games_map == input$selected_games)
+      if (length(idx) > 0) {
+        game_name <- names(games_map)[idx[1]]
+      }
+    }
+    
+    if (is.null(game_name) || length(game_name) == 0 || is.na(game_name)) {
+      game_name <- "Unknown Game"
+    }
+    
+    game_name
+  }
+  
+  sanitize_filename <- function(x) {
+    x <- as.character(x)
+    x <- gsub("[^A-Za-z0-9_\\-]", "_", x)
+    x
+  }
+  ####### ends  - MAKING HELPER FUNCTION TO CORRECT THE COMPARE PLAYERS TAB - CSV FILE DOWNLOAD#########
+  
+  
+  
+  
   
   
   # Store selected game track data reactively
@@ -3433,12 +3462,56 @@ server <- function(input, output, session) {
     
     # Save CSVs
     output$save_table1 <- downloadHandler(
-      filename = function(){ paste0("time_dist_table_", Sys.Date(), ".csv") },
-      content  = function(file){ write_csv_excel_utf8(ngts, file, na = "NA") }
+      filename = function() {
+        game_name_safe <- sanitize_filename(get_selected_game_name())
+        paste0("Compare_", game_name_safe, "_route_length_vs_time_", Sys.Date(), ".csv")
+      },
+      content = function(file) {
+        game_name <- get_selected_game_name()
+        
+        df_out <- ngts
+        
+        if (!is.null(df_out) && nrow(df_out) > 0) {
+          df_out <- data.frame(
+            Game = game_name,
+            Player = df_out$Name,
+            Correct = df_out$Correct,
+            Time = df_out$Time,
+            `Distance travelled` = df_out$`Distance travelled`,
+            `Error to target` = df_out$`Error to target`,
+            check.names = FALSE,
+            stringsAsFactors = FALSE
+          )
+        }
+        
+        write_csv_excel_utf8(df_out, file, na = "NA")
+      }
     )
+    
     output$save_table2 <- downloadHandler(
-      filename = function(){ paste0("ans_err_table_", Sys.Date(), ".csv") },
-      content  = function(file){ write_csv_excel_utf8(cores, file, na = "NA") }
+      filename = function() {
+        game_name_safe <- sanitize_filename(get_selected_game_name())
+        paste0("Compare_", game_name_safe, "_answer_error_", Sys.Date(), ".csv")
+      },
+      content = function(file) {
+        game_name <- get_selected_game_name()
+        
+        df_out <- cores
+        
+        if (!is.null(df_out) && nrow(df_out) > 0) {
+          df_out <- data.frame(
+            Game = game_name,
+            Player = df_out$Name,
+            Correct = df_out$Correct,
+            Answer = df_out$Answer,
+            Error = df_out$Error,
+            check.names = FALSE,
+            stringsAsFactors = FALSE
+          )
+        }
+        
+        write_csv_excel_utf8(df_out, file, na = "NA")
+      }
     )
     
     
