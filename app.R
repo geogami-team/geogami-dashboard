@@ -2459,6 +2459,21 @@ server <- function(input, output, session) {
         selected_task_ids_now <- input$selected_task_ids
         player_blocks <- list()
         
+        # get readable game name once
+        games_map <- games_choices_rv()
+        game_name <- NA_character_
+        
+        if (!is.null(games_map) && length(games_map) > 0 && !is.null(input$selected_games)) {
+          idx <- which(games_map == input$selected_games)
+          if (length(idx) > 0) {
+            game_name <- names(games_map)[idx[1]]
+          }
+        }
+        
+        if (is.null(game_name) || length(game_name) == 0 || is.na(game_name)) {
+          game_name <- "Unknown Game"
+        }
+        
         for (track_id in input$selected_files) {
           url <- paste0(apiURL_rv(), "/track/", track_id)
           tr <- fetch_games_data_from_server(url, accessToken_rv())
@@ -2489,6 +2504,7 @@ server <- function(input, output, session) {
           }
           
           df_one <- data.frame(
+            Game = game_name,
             Player = player_name,
             `Created At` = created_at,
             df_one,
