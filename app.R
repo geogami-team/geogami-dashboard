@@ -704,17 +704,29 @@ server <- function(input, output, session) {
   
   task_choice_styles <- function(track, n_tasks = NULL) {
     if (is.null(track) || is.null(track$events)) {
-      return(list(pic_grey = logical(0), map_grey = logical(0)))
+      return(list(
+        pic_grey = logical(0),
+        map_grey = logical(0),
+        cmp_grey = logical(0),
+        stat_grey = logical(0)
+      ))
     }
     
     evts <- track$events
     sl <- task_slices_by_init_safe(evts)
     if (!nrow(sl)) {
-      return(list(pic_grey = logical(0), map_grey = logical(0)))
+      return(list(
+        pic_grey = logical(0),
+        map_grey = logical(0),
+        cmp_grey = logical(0),
+        stat_grey = logical(0)
+      ))
     }
     
-    pic_grey <- rep(FALSE, nrow(sl))
-    map_grey <- rep(FALSE, nrow(sl))
+    pic_grey  <- rep(FALSE, nrow(sl))
+    map_grey  <- rep(FALSE, nrow(sl))
+    cmp_grey  <- rep(FALSE, nrow(sl))
+    stat_grey <- rep(FALSE, nrow(sl))
     
     for (k in seq_len(nrow(sl))) {
       block <- sl$start[k]:sl$end[k]
@@ -731,7 +743,7 @@ server <- function(input, output, session) {
       
       pic_grey[k] <- !(q_has || a_has)
       
-      # ----- Map tab: grey if information task OR free task -----
+      # task category
       task_cat <- try(evts$task$category[s], silent = TRUE)
       task_cat <- if (inherits(task_cat, "try-error") || is.null(task_cat) || length(task_cat) == 0) {
         NA_character_
@@ -739,6 +751,7 @@ server <- function(input, output, session) {
         as.character(task_cat[1])
       }
       
+      # task type
       task_type <- try(evts$task$type[s], silent = TRUE)
       task_type <- if (inherits(task_type, "try-error") || is.null(task_type) || length(task_type) == 0) {
         NA_character_
@@ -746,19 +759,36 @@ server <- function(input, output, session) {
         as.character(task_type[1])
       }
       
+      # ----- Map tab: grey if information task OR free task -----
       map_grey[k] <- (!is.na(task_cat) && task_cat == "info") ||
         (!is.na(task_type) && task_type == "free")
+      
+      # ----- Compare Players / Statistics tabs: grey where no meaningful output is produced -----
+      is_info_task <- (!is.na(task_cat) && task_cat == "info") ||
+        (!is.na(task_type) && task_type == "info")
+      
+      cmp_grey[k]  <- is_info_task
+      stat_grey[k] <- is_info_task
     }
     
     if (!is.null(n_tasks)) {
-      length(pic_grey) <- n_tasks
-      length(map_grey) <- n_tasks
+      length(pic_grey)  <- n_tasks
+      length(map_grey)  <- n_tasks
+      length(cmp_grey)  <- n_tasks
+      length(stat_grey) <- n_tasks
       
-      pic_grey[is.na(pic_grey)] <- FALSE
-      map_grey[is.na(map_grey)] <- FALSE
+      pic_grey[is.na(pic_grey)]   <- FALSE
+      map_grey[is.na(map_grey)]   <- FALSE
+      cmp_grey[is.na(cmp_grey)]   <- FALSE
+      stat_grey[is.na(stat_grey)] <- FALSE
     }
     
-    list(pic_grey = pic_grey, map_grey = map_grey)
+    list(
+      pic_grey = pic_grey,
+      map_grey = map_grey,
+      cmp_grey = cmp_grey,
+      stat_grey = stat_grey
+    )
   }
   
   update_main_task_pickers <- function(session, track, n_tasks, selected) {
@@ -793,19 +823,26 @@ server <- function(input, output, session) {
       )
     )
     
-    # Other synced pickers stay normal
+    # Compare Players picker: grey tasks with no useful compare/stat output
     updatePickerInput(
       session = session,
       inputId = "num_value_comparison",
       choices = choice_vec,
-      selected = selected
+      selected = selected,
+      choicesOpt = list(
+        style = ifelse(styles$cmp_grey, grey_css, "")
+      )
     )
     
+    # Statistics picker: grey tasks with no useful compare/stat output
     updatePickerInput(
       session = session,
       inputId = "num_value_Statistics",
       choices = choice_vec,
-      selected = selected
+      selected = selected,
+      choicesOpt = list(
+        style = ifelse(styles$stat_grey, grey_css, "")
+      )
     )
   }
   ########### MAP AND PICTURES - TASKS SELECTION - APPEAR GREY OUT WHEN NOT AVAILABLE - END #########
