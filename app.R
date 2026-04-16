@@ -1308,6 +1308,11 @@ server <- function(input, output, session) {
         }
       }
       
+      if (is.na(status) && !is.na(task_cat) && task_cat == "info") {
+        status <- "Correct"
+        correct <- TRUE
+      }
+      
       # answer display string (status + optional value)
       ans_val <- format_answer_value(evts, final_idx)
       answer_txt <- if (!is.na(status) && !is.na(ans_val) && nzchar(ans_val)) paste(status, ans_val) else status
@@ -2423,15 +2428,13 @@ server <- function(input, output, session) {
     output$player_name <- renderText({
       paste("Player: ", data[[1]]$players[1], sep = "")
     })
+    
+    
     #Overall score
-    if (sum(grepl(pattern = "Incorrect", df$Answer)) != 0 || sum(grepl(pattern = "Target", df$Answer)) != 0) { #If incorrect values are in the table
-      good <- sum(grepl(pattern = "Correct", df$Answer))
-      total <- sum(grepl(pattern = "Incorrect", df$Answer)) + sum(grepl(pattern = "Correct", df$Answer)) + sum(grepl(pattern = "Target", df$Answer))
-    }
-    else { #if all is correct
-      good <- sum(grepl(pattern = "Correct", df$Answer))
-      total <- good
-    }
+    good <- sum(sm$status == "Correct", na.rm = TRUE)
+    total <- nrow(sm)
+    
+    
     
     output$overall_score <- renderText({
       paste("Overall score: ", good, "/", total, sep = "")
@@ -4042,15 +4045,12 @@ server <- function(input, output, session) {
     output$player_name <- renderText({
       paste("Player: ", data[[1]]$players[1], sep = "")
     })
+    
+    
     #Overall score
-    if (sum(grepl(pattern = "Incorrect", df$Answer)) != 0 || sum(grepl(pattern = "Target", df$Answer)) != 0) { #If incorrect values are in the table
-      good <- sum(grepl(pattern = "Correct", df$Answer))
-      total <- sum(grepl(pattern = "Incorrect", df$Answer)) + sum(grepl(pattern = "Correct", df$Answer)) + sum(grepl(pattern = "Target", df$Answer))
-    }
-    else { #if all is correct
-      good <- sum(grepl(pattern = "Correct", df$Answer))
-      total <- good
-    }
+    good <- sum(sm$status == "Correct", na.rm = TRUE)
+    total <- nrow(sm)
+    
     
     output$overall_score <- renderText({
       paste("Overall score: ", good, "/", total, sep = "")
