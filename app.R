@@ -2395,39 +2395,28 @@ server <- function(input, output, session) {
       }
     }
     
-    #Delete the last column if it's empty 
-    counter_dist <- 0
-    for (k in 1:length(dist)) {
-      if (is.na(dist[[k]])) {
-        counter_dist <- counter_dist + 1
-      }
-    }
+    # Build the main table from the same canonical source used by "Save all to CSV"
+    sm <- task_summary(data[[1]])
     
-    #Build the main table
-    if (counter_dist != length(dist)) {
-      mat = matrix(rg, ncol = 6, nrow = length(ans))
-      
-      df <- data.frame(
-        Type = mat[,1],
-        Assignment = mat[,2],
-        Answer = mat[,3],
-        Time = mat[,4],
-        Tries = mat[,5],
-        Error = mat[,6]
-      )
-      colnames(df)[6] <- "Error in °/m"
-    }
-    else {
-      mat = matrix(rg, ncol = 6, nrow = length(ans)) #Big table without the last column
-      
-      df <- data.frame(
-        Type = mat[,1],
-        Assignment = mat[,2],
-        Answer = mat[,3],
-        Time = mat[,4],
-        Tries = mat[,5]
-      )
-    }
+    df <- data.frame(
+      Type = vapply(sm$task_type, pretty_task_type, character(1)),
+      Assignment = sm$assignment,
+      Answer = sm$answer_txt,
+      Time = ifelse(is.na(sm$time_s), NA_character_, paste0(sm$time_s, " s")),
+      Tries = sm$tries,
+      `Error in °/m` = sm$error_txt,
+      check.names = FALSE,
+      stringsAsFactors = FALSE
+    )
+    
+    info_mask <- tolower(trimws(df$Type)) == "information"
+    df$Answer[info_mask] <- NA_character_
+    df$Tries[info_mask] <- 0
+    df[["Error in °/m"]][info_mask] <- NA_character_
+    
+    
+    
+    
     
     #Name of the player
     #print(data[[1]]$players[1])
@@ -4025,39 +4014,28 @@ server <- function(input, output, session) {
       }
     }
     
-    #Delete the last column if it's empty 
-    counter_dist <- 0
-    for (k in 1:length(dist)) {
-      if (is.na(dist[[k]])) {
-        counter_dist <- counter_dist + 1
-      }
-    }
+    # Build the main table from the same canonical source used by "Save all to CSV"
+    sm <- task_summary(data[[1]])
     
-    #Build the main table
-    if (counter_dist != length(dist)) {
-      mat = matrix(rg, ncol = 6, nrow = length(ans))
-      
-      df <- data.frame(
-        Type = mat[,1],
-        Assignment = mat[,2],
-        Answer = mat[,3],
-        Time = mat[,4],
-        Tries = mat[,5],
-        Error = mat[,6]
-      )
-      colnames(df)[6] <- "Error in °/m"
-    }
-    else {
-      mat = matrix(rg, ncol = 6, nrow = length(ans)) #Big table without the last column
-      
-      df <- data.frame(
-        Type = mat[,1],
-        Assignment = mat[,2],
-        Answer = mat[,3],
-        Time = mat[,4],
-        Tries = mat[,5]
-      )
-    }
+    df <- data.frame(
+      Type = vapply(sm$task_type, pretty_task_type, character(1)),
+      Assignment = sm$assignment,
+      Answer = sm$answer_txt,
+      Time = ifelse(is.na(sm$time_s), NA_character_, paste0(sm$time_s, " s")),
+      Tries = sm$tries,
+      `Error in °/m` = sm$error_txt,
+      check.names = FALSE,
+      stringsAsFactors = FALSE
+    )
+    
+    info_mask <- tolower(trimws(df$Type)) == "information"
+    df$Answer[info_mask] <- NA_character_
+    df$Tries[info_mask] <- 0
+    df[["Error in °/m"]][info_mask] <- NA_character_
+    
+    
+    
+    
     
     #Name of the player
     #print(data[[1]]$players[1])
