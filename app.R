@@ -1278,11 +1278,16 @@ server <- function(input, output, session) {
       
       # correctness (prefer answer$correct, fallback to correct)
       cr <- try(evts$answer$correct[final_idx], silent = TRUE)
-      cr <- if (inherits(cr, "try-error") || is.null(cr) || length(cr) == 0 || is.na(cr)) try(evts$correct[final_idx], silent = TRUE) else cr
+      cr <- if (inherits(cr, "try-error") || is.null(cr) || length(cr) == 0 || is.na(cr)) {
+        try(evts$correct[final_idx], silent = TRUE)
+      } else cr
       cr <- if (inherits(cr, "try-error")) NA else cr
       correct <- truthy(cr)
       
-      nav_reached <- (!is.na(task_cat) && task_cat == "nav" && any(evts$type[block] == "WAYPOINT_REACHED", na.rm=TRUE))
+      nav_reached <- (!is.na(task_cat) && task_cat == "nav" &&
+                        any(evts$type[block] == "WAYPOINT_REACHED", na.rm = TRUE))
+      
+      has_ok_click <- any(evts$type[block] == "ON_OK_CLICKED", na.rm = TRUE)
       
       status <- NA_character_
       
@@ -1291,31 +1296,38 @@ server <- function(input, output, session) {
         
       } else if (!is.na(task_cat) && task_cat == "nav") {
         
-        # 1) Prefer waypoint reached if present (nav-flag usually)
         if (isTRUE(nav_reached)) {
           status <- "Correct"
+          correct <- TRUE
           
         } else {
-          # 2) Big-table rule: for nav-arrow/nav-text/nav-photo, if task took >0s => treat as Correct
           is_nav_guided <- !is.na(task_type) && task_type %in% c("nav-arrow", "nav-text", "nav-photo")
           
           if (is_nav_guided && !is.na(time_s) && time_s > 0) {
             status  <- "Correct"
-            correct <- TRUE   # important: so Compare/Stats count it as Correct
+            correct <- TRUE
           } else {
-            status <- "Target not reached"
+            status  <- "Target not reached"
+            correct <- FALSE
           }
         }
-      }
-      
-      if (is.na(status) && !is.na(task_cat) && task_cat == "info") {
-        status <- "Correct"
+        
+      } else if (is.na(status) && !is.na(task_cat) && task_cat == "info") {
+        status  <- "Correct"
         correct <- TRUE
+        
+      } else if (is.na(status) && !has_ok_click) {
+        status  <- "Not submitted"
+        correct <- FALSE
       }
       
       # answer display string (status + optional value)
       ans_val <- format_answer_value(evts, final_idx)
-      answer_txt <- if (!is.na(status) && !is.na(ans_val) && nzchar(ans_val)) paste(status, ans_val) else status
+      answer_txt <- if (!is.na(status) && !is.na(ans_val) && nzchar(ans_val)) {
+        paste(status, ans_val)
+      } else {
+        status
+      }
       
       # direction metrics
       ans_b <- NA_real_
