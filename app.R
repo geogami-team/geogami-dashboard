@@ -660,6 +660,263 @@ server <- function(input, output, session) {
     abs(d)
   }
   
+  normalize_ring_coords <- function(coords) {
+    if (is.null(coords)) return(NULL)
+    
+    if (is.data.frame(coords) || is.matrix(coords)) {
+      m <- as.matrix(coords)
+      if (ncol(m) >= 2) {
+        m <- cbind(num(m[, 1]), num(m[, 2]))
+        m <- m[is.finite(m[, 1]) & is.finite(m[, 2]), , drop = FALSE]
+        if (nrow(m) >= 3) return(m)
+      }
+    }
+    
+    v <- unlist(coords, use.names = FALSE)
+    v <- num(v)
+    v <- v[is.finite(v)]
+    
+    if (length(v) < 6 || (length(v) %% 2) != 0) return(NULL)
+    
+    half <- length(v) / 2
+    cand1 <- cbind(v[1:half], v[(half + 1):length(v)])
+    cand2 <- matrix(v, ncol = 2, byrow = TRUE)
+    
+    is_plausible <- function(m) {
+      is.matrix(m) &&
+        ncol(m) == 2 &&
+        all(is.finite(m)) &&
+        all(m[, 1] >= -180 & m[, 1] <= 180) &&
+        all(m[, 2] >= -90 & m[, 2] <= 90)
+    }
+    
+    closure_score <- function(m) {
+      if (!is_plausible(m) || nrow(m) < 2) return(Inf)
+      sum((m[1, ] - m[nrow(m), ])^2)
+    }
+    
+    s1 <- closure_score(cand1)
+    s2 <- closure_score(cand2)
+    
+    out <- if (s1 <= s2) cand1 else cand2
+    out <- out[is.finite(out[, 1]) & is.finite(out[, 2]), , drop = FALSE]
+    
+    if (nrow(out) < 3) return(NULL)
+    out
+  }
+  
+  get_polygon_ring <- function(evts, idx) {
+    coords <- NULL
+    
+    feat <- try(evts$task$question$geometry$features[[idx]], silent = TRUE)
+    if (!inherits(feat, "try-error") && !is.null(feat)) {
+      coords <- try(feat$geometry$coordinates[[1]], silent = TRUE)
+      if (inherits(coords, "try-error")) coords <- NULL
+    }
+    
+    if (is.null(coords)) {
+      feat <- try(evts$task$question$geometry$feature[[idx]], silent = TRUE)
+      if (!inherits(feat, "try-error") && !is.null(feat)) {
+        coords <- try(feat$geometry$coordinates[[1]], silent = TRUE)
+        if (inherits(coords, "try-error")) coords <- NULL
+      }
+    }
+    
+    normalize_ring_coords(coords)
+  }
+  
+  get_click_lonlat <- function(evts, idx) {
+    cp <- try(evts$answer$clickPosition[[idx]], silent = TRUE)
+    if (!inherits(cp, "try-error") && length(cp) == 2) {
+      lon <- num(cp[1]); lat <- num(cp[2])
+      if (is.finite(lon) && is.finite(lat)) return(c(lon, lat))
+    }
+    
+    lon <- try(evts$clickPosition$longitude[idx], silent = TRUE)
+    lat <- try(evts$clickPosition$latitude[idx],  silent = TRUE)
+    
+    lon <- if (inherits(lon, "try-error")) NA_real_ else num(lon)
+    lat <- if (inherits(lat, "try-error")) NA_real_ else num(lat)
+    
+    c(lon, lat)
+  }
+  
+  point_in_ring <- function(lon, lat, ring) {
+    ring <- as.matrix(ring)
+    ring <- ring[is.finite(ring[, 1]) & is.finite(ring[, 2]), , drop = FALSE]
+    if (nrow(ring) < 3) return(FALSE)
+    
+    if (!all(ring[1, ] == ring[nrow(ring), ])) {
+      ring <- rbind(ring, ring[1, ])
+    }
+    
+    inside <- FALSE
+    j <- nrow(ring)
+    
+    for (i in seq_len(nrow(ring))) {
+      xi <- ring[i, 1]; yi <- ring[i, 2]
+      xj <- ring[j, 1]; yj <- ring[j, 2]
+      
+      hit <- ((yi > lat) != (yj > lat)) &&
+        (lon < (xj - xi) * (lat - yi) / ((yj - yi) + 1e-12) + xi)
+      
+      if (isTRUE(hit)) inside <- !inside
+      j <- i
+    }
+    
+    inside
+  }
+  
+  point_to_segment_distance_m <- function(lon, lat, lon1, lat1, lon2, lat2) {
+    scale_x <- 111320 * cos(lat * pi / 180)
+    scale_y <- 110540
+    
+    px <- 0
+    py <- 0
+    
+    x1 <- (lon1 - lon) * scale_x
+    y1 <- (lat1 - lat) * scale_y
+    x2 <- (lon2 - lon) * scale_x
+    y2 <- (lat2 - lat) * scale_y
+    
+    dx <- x2 - x1
+    dy <- y2 - y1
+    denom <- dx * dx + dy * dy
+    
+    if (!is.finite(denom) || denom == 0) {
+      return(sqrt((px - x1)^2 + (py - y1)^2))
+    }
+    
+    t <- ((px - x1) * dx + (py - y1) * dy) / denom
+    t <- max(0, min(1, t))
+    
+    projx <- x1 + t * dx
+    projy <- y1 + t * dy
+    
+    sqrt((px - projx)^2 + (py - projy)^2)
+  }
+  
+  point_to_ring_distance_m <- function(lon, lat, ring) {
+    ring <- as.matrix(ring)
+    ring <- ring[is.finite(ring[, 1]) & is.finite(ring[, 2]), , drop = FALSE]
+    if (nrow(ring) < 2) return(NA_real_)
+    
+    if (!all(ring[1, ] == ring[nrow(ring), ])) {
+      ring <- rbind(ring, ring[1, ])
+    }
+    
+    if (point_in_ring(lon, lat, ring)) return(0)
+    
+    d <- vapply(seq_len(nrow(ring) - 1), function(i) {
+      point_to_segment_distance_m(
+        lon, lat,
+        ring[i, 1], ring[i, 2],
+        ring[i + 1, 1], ring[i + 1, 2]
+      )
+    }, numeric(1))
+    
+    d <- d[is.finite(d)]
+    if (!length(d)) return(NA_real_)
+    min(d)
+  }
+  
+  get_task_error_m <- function(evts, idx) {
+    task_type <- try(evts$task$type[idx], silent = TRUE)
+    task_type <- if (inherits(task_type, "try-error")) NA_character_ else as.character(task_type)
+    
+    eval_type <- try(evts$task$evaluate[idx], silent = TRUE)
+    eval_type <- if (inherits(eval_type, "try-error")) NA_character_ else as.character(eval_type)
+    
+    d0 <- try(evts$answer$distance[idx], silent = TRUE)
+    d0 <- if (inherits(d0, "try-error")) NA_real_ else num(d0)
+    if (is.finite(d0)) return(d0)
+    
+    if ((!is.na(task_type) && task_type == "theme-loc") ||
+        (!is.na(eval_type) && eval_type %in% c("evalDistanceToPoint", "distanceToPoint"))) {
+      
+      cp <- get_click_lonlat(evts, idx)
+      lon_true <- num(evts$position$coords$longitude[idx])
+      lat_true <- num(evts$position$coords$latitude[idx])
+      
+      if (all(is.finite(c(cp, lon_true, lat_true)))) {
+        return(haversine_m(cp[1], cp[2], lon_true, lat_true))
+      }
+    }
+    
+    if (!is.na(task_type) && task_type == "nav-flag") {
+      targ <- try(evts$answer$target[[idx]], silent = TRUE)
+      lon_p <- num(evts$position$coords$longitude[idx])
+      lat_p <- num(evts$position$coords$latitude[idx])
+      
+      if (!inherits(targ, "try-error") && length(targ) == 2) {
+        lon_t <- num(targ[1])
+        lat_t <- num(targ[2])
+        
+        if (all(is.finite(c(lon_t, lat_t, lon_p, lat_p)))) {
+          return(haversine_m(lon_p, lat_p, lon_t, lat_t))
+        }
+      }
+    }
+    
+    if ((!is.na(task_type) && task_type == "theme-object") ||
+        (!is.na(eval_type) && eval_type == "evalPointInPolygon")) {
+      
+      cp <- get_click_lonlat(evts, idx)
+      ring <- get_polygon_ring(evts, idx)
+      
+      if (all(is.finite(cp)) && !is.null(ring)) {
+        return(point_to_ring_distance_m(cp[1], cp[2], ring))
+      }
+    }
+    
+    NA_real_
+  }
+  
+  format_task_error <- function(evts, idx) {
+    task_type <- try(evts$task$type[idx], silent = TRUE)
+    task_type <- if (inherits(task_type, "try-error")) NA_character_ else as.character(task_type)
+    
+    eval_type <- try(evts$task$evaluate[idx], silent = TRUE)
+    eval_type <- if (inherits(eval_type, "try-error")) NA_character_ else as.character(eval_type)
+    
+    correct_flag <- try(evts$answer$correct[idx], silent = TRUE)
+    if (inherits(correct_flag, "try-error") || is.null(correct_flag) || length(correct_flag) == 0 || is.na(correct_flag)) {
+      correct_flag <- try(evts$correct[idx], silent = TRUE)
+    }
+    correct_flag <- if (inherits(correct_flag, "try-error")) NA else truthy(correct_flag)
+    
+    is_dir <- (!is.na(task_type) && task_type == "theme-direction") ||
+      (!is.na(eval_type) && eval_type %in% c("evalMapDirection", "evalDirection"))
+    
+    is_tol_dist <- (!is.na(task_type) && task_type %in% c("theme-loc", "nav-flag")) ||
+      (!is.na(eval_type) && eval_type %in% c("evalDistanceToPoint", "distanceToPoint"))
+    
+    if (is_dir) {
+      err_deg <- angle_diff_deg(
+        get_answer_bearing(idx, evts),
+        get_correct_bearing(idx, evts)
+      )
+      if (is.finite(err_deg)) return(paste0(round(err_deg, 2), " °"))
+      return(NA_character_)
+    }
+    
+    err_m <- get_task_error_m(evts, idx)
+    if (!is.finite(err_m)) return(NA_character_)
+    
+    if (is_tol_dist) {
+      acc_m <- get_task_accuracy(evts, idx, kind = "nav")
+      shown_m <- if (!is.na(correct_flag) && !isTRUE(correct_flag)) {
+        pmax(err_m - acc_m, 0)
+      } else {
+        err_m
+      }
+      return(paste0(round(shown_m, 2), " m"))
+    }
+    
+    paste0(round(err_m, 2), " m")
+  }
+  
+  
   ########################CALCULATING CORRECT DIRECTION ERROR FIXING ENDS#################
   
   
@@ -1070,53 +1327,8 @@ server <- function(input, output, session) {
         err_deg <- angle_diff_deg(ans_b, cor_b)
       }
       
-      # distance-to-target metric (meters) for nav-flag/theme-loc OR distanceToPoint evaluation
-      dist_to_target_m <- NA_real_
-      is_dist_eval <- (!is.null(evts$task$evaluate) && !is.na(evts$task$evaluate[final_idx]) &&
-                         evts$task$evaluate[final_idx] == "distanceToPoint")
-      is_dist_type <- (!is.na(task_type) && task_type %in% c("nav-flag","theme-loc"))
-      
-      if (is_dist_eval || is_dist_type) {
-        d0 <- try(evts$answer$distance[final_idx], silent = TRUE)
-        d0 <- if (inherits(d0, "try-error")) NA_real_ else num(d0)
-        dist_to_target_m <- d0
-        
-        # fallback compute if missing but target+position exist
-        if (is.na(dist_to_target_m)) {
-          targ <- try(evts$answer$target[[final_idx]], silent = TRUE)
-          if (!inherits(targ, "try-error") && length(targ) == 2) {
-            lon_t <- num(targ[1]); lat_t <- num(targ[2])
-            lon_p <- num(evts$position$coords$longitude[final_idx])
-            lat_p <- num(evts$position$coords$latitude[final_idx])
-            if (is.finite(lon_t) && is.finite(lat_t) && is.finite(lon_p) && is.finite(lat_p)) {
-              dist_to_target_m <- haversine_m(lon_p, lat_p, lon_t, lat_t)
-            }
-          }
-        }
-      }
-      
-      # single “Error in °/m” text, matching your table logic
-      # --- PATCH 6: manager rule for navigation error display (for Compare/Statistics) ---
-      error_txt <- NA_character_
-      
-      if (is_dir && !is.na(err_deg)) {
-        # Direction tasks: hide error if Correct
-        if (!is.na(correct) && isTRUE(correct)) {
-          error_txt <- NA_character_
-        } else {
-          error_txt <- paste0(round(err_deg, 2), " °")
-        }
-        
-      } else if ((is_dist_eval || is_dist_type) && !is.na(dist_to_target_m)) {
-        # Navigation / distance tasks: blank if correct; else show (distance - accuracy)
-        acc_m <- get_task_accuracy(evts, final_idx, kind = "nav")
-        
-        if (!is.na(correct) && isTRUE(correct)) {
-          error_txt <- NA_character_
-        } else {
-          error_txt <- paste0(round(pmax(dist_to_target_m - acc_m, 0), 2), " m")
-        }
-      }
+      dist_to_target_m <- get_task_error_m(evts, final_idx)
+      error_txt <- format_task_error(evts, final_idx)
       # --- END PATCH 6 ---
       
       # distance travelled for this task attempt (from waypoints within [start,end])
@@ -1905,135 +2117,13 @@ server <- function(input, output, session) {
     #print(cbind(data[[1]]$events$task$type, data[[1]]$events$correct,data[[1]]$events$answer$correct))
     #print(ans)
     
-    # Distance to the correct answer
-    dist1_m   <- list()   # meters
-    dist1_deg <- list()   # player's bearing (deg)
-    dist2_deg <- list()   # correct bearing (deg)
+    dist <- list()
     
     for (j in 1:(length(id) - 1)) {
       if ((!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
-        # distance in meters (as is)
-        dist1_m <- append(dist1_m, data[[1]]$events$answer$distance[j])
-        
-        # NEW: 
-        ans_bearing <- get_answer_bearing(j, data[[1]]$events)
-        cor_bearing <- get_correct_bearing(j, data[[1]]$events)
-        
-        dist1_deg <- append(dist1_deg, ans_bearing)
-        dist2_deg <- append(dist2_deg, cor_bearing)
+        dist <- append(dist, format_task_error(data[[1]]$events, j))
       }
     }
-    
-    # --- PATCH 4A: collect correctness + accuracy per task-final-row (same j's) ---
-    dist_correct <- list()
-    dist_acc_m   <- list()
-    
-    for (j in 1:(length(id) - 1)) {
-      if ((!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
-        
-        # correctness: prefer answer$correct, fallback to correct
-        cf <- try(data[[1]]$events$answer$correct[j], silent = TRUE)
-        if (inherits(cf, "try-error") || is.null(cf) || length(cf) == 0 || is.na(cf)) {
-          cf <- try(data[[1]]$events$correct[j], silent = TRUE)
-          if (inherits(cf, "try-error")) cf <- NA
-        }
-        dist_correct <- append(dist_correct, truthy(cf))
-        
-        # accuracy in meters for nav/distance tasks (15m fallback via helper)
-        dist_acc_m <- append(dist_acc_m, get_task_accuracy(data[[1]]$events, j, kind = "nav"))
-      }
-    }
-    # --- END PATCH 4A ---
-    
-    
-    #num <- function(x) suppressWarnings(as.numeric(x))
-    
-    # d1m   <- num(unlist(dist1_m))
-    # d1deg <- num(unlist(dist1_deg))
-    # d2deg <- num(unlist(dist2_deg))
-    # 
-    # maxn <- max(length(d1m), length(d1deg), length(d2deg))
-    # length(d1m)   <- maxn
-    # length(d1deg) <- maxn
-    # length(d2deg) <- maxn
-    # 
-    # rds <- cbind(d1m, dist_deg = angle_diff_deg_vec(d1deg, d2deg))
-    # #print(rds)
-    # 
-    # #print(rds)
-    # 
-    # ####sometimes we don't need to merge the column
-    # if (ncol(rds) == 2) {
-    #   rds[is.na(rds)] <- 0
-    #   dist <- c(rds[,1]+rds[,2])
-    #   dist[dist == 0] <- NA
-    # }
-    # else {
-    #   dist <- rds
-    # }
-    # 
-    # if (length(dist) != 0) {
-    #   dist <- round(dist,2)
-    # }
-    # 
-    # #Add unities on the last column
-    # for (i in 1:length(typ)) {
-    #   if (!is.na(typ[[i]]) && !is.na(dist[[i]]) && typ[[i]] == "theme-direction"){
-    #     dist[[i]] <- paste(dist[[i]], "°")
-    #   }
-    #   if (!is.na(typ[[i]]) && !is.na(dist[[i]]) && (typ[[i]] == "nav-flag" || typ[[i]] == "theme-loc")) {
-    #     dist[[i]] <- paste(dist[[i]], "m")
-    #   }
-    # }
-    # #print(dist)
-    
-    
-    # after you build typ, and dist1_m/dist1_deg/dist2_deg
-    
-    task_type <- as.character(unlist(typ))
-    n <- length(task_type)
-    
-    d1m   <- suppressWarnings(as.numeric(unlist(dist1_m)))
-    d1deg <- num(unlist(dist1_deg))
-    d2deg <- num(unlist(dist2_deg))
-    
-    length(d1m)   <- n
-    length(d1deg) <- n
-    length(d2deg) <- n
-    
-    deg_err <- angle_diff_deg_vec(d1deg, d2deg)
-    
-    # logical masks (TRUE/FALSE length n)
-    mask_dir <- !is.na(task_type) & task_type == "theme-direction"
-    mask_m   <- !is.na(task_type) & task_type %in% c("nav-flag", "theme-loc")
-    
-    dist_num <- rep(NA_real_, n)
-    dist_num[mask_dir] <- deg_err[mask_dir]
-    dist_num[mask_m]   <- d1m[mask_m]
-    
-    # --- PATCH 4B: manager rule for navigation error display ---
-    correct_vec <- as.logical(unlist(dist_correct))
-    acc_m_vec   <- suppressWarnings(as.numeric(unlist(dist_acc_m)))
-    
-    length(correct_vec) <- n
-    length(acc_m_vec)   <- n
-    
-    dist_txt <- rep(NA_character_, n)
-    
-    
-    # Direction tasks: show error ONLY if incorrect / unknown
-    show_dir <- mask_dir & !is.na(deg_err) & (is.na(correct_vec) | correct_vec == FALSE)
-    dist_txt[show_dir] <- paste0(round(deg_err[show_dir], 2), " °")
-    
-    # Navigation/distance tasks: show blank if correct; else show (distance - accuracy)
-    nav_raw <- d1m
-    nav_err <- pmax(nav_raw - acc_m_vec, 0)
-    
-    show_nav <- mask_m & !is.na(nav_raw) & (is.na(correct_vec) | correct_vec == FALSE)
-    dist_txt[show_nav] <- paste0(round(nav_err[show_nav], 2), " m")
-    
-    dist <- dist_txt
-    # --- END PATCH 4B ---------------------------------------------
     
     
     
@@ -3387,9 +3477,7 @@ server <- function(input, output, session) {
           Name = nm,
           Correct = ifelse(is.na(correct_txt), NA_character_, correct_txt),
           Answer = ifelse(is.na(ans_deg), NA_character_, paste0(round(ans_deg, 3), " °")),
-          Error  = ifelse(!is.na(correct_txt) && correct_txt == "Correct",
-                          NA_character_,
-                          ifelse(is.na(err_deg), NA_character_, paste0(round(err_deg, 3), " °"))),
+          Error  = ifelse(is.na(err_deg), NA_character_, paste0(round(err_deg, 3), " °")),
           check.names = FALSE,
           stringsAsFactors = FALSE
         ))
@@ -3659,135 +3747,13 @@ server <- function(input, output, session) {
     #print(ans)
     
     # Distance to the correct answer
-    dist1_m   <- list()   # meters
-    dist1_deg <- list()   # player's bearing (deg)
-    dist2_deg <- list()   # correct bearing (deg)
+    dist <- list()
     
     for (j in 1:(length(id) - 1)) {
       if ((!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
-        # distance in meters (as is)
-        dist1_m <- append(dist1_m, data[[1]]$events$answer$distance[j])
-        
-        # NEW: 
-        ans_bearing <- get_answer_bearing(j, data[[1]]$events)
-        cor_bearing <- get_correct_bearing(j, data[[1]]$events)
-        
-        dist1_deg <- append(dist1_deg, ans_bearing)
-        dist2_deg <- append(dist2_deg, cor_bearing)
+        dist <- append(dist, format_task_error(data[[1]]$events, j))
       }
     }
-    
-    # --- PATCH 4A: collect correctness + accuracy per task-final-row (same j's) ---
-    dist_correct <- list()
-    dist_acc_m   <- list()
-    
-    for (j in 1:(length(id) - 1)) {
-      if ((!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
-        
-        # correctness: prefer answer$correct, fallback to correct
-        cf <- try(data[[1]]$events$answer$correct[j], silent = TRUE)
-        if (inherits(cf, "try-error") || is.null(cf) || length(cf) == 0 || is.na(cf)) {
-          cf <- try(data[[1]]$events$correct[j], silent = TRUE)
-          if (inherits(cf, "try-error")) cf <- NA
-        }
-        dist_correct <- append(dist_correct, truthy(cf))
-        
-        # accuracy in meters for nav/distance tasks (15m fallback via helper)
-        dist_acc_m <- append(dist_acc_m, get_task_accuracy(data[[1]]$events, j, kind = "nav"))
-      }
-    }
-    # --- END PATCH 4A ---
-    
-    
-    #num <- function(x) suppressWarnings(as.numeric(x))
-    
-    # d1m   <- num(unlist(dist1_m))
-    # d1deg <- num(unlist(dist1_deg))
-    # d2deg <- num(unlist(dist2_deg))
-    # 
-    # maxn <- max(length(d1m), length(d1deg), length(d2deg))
-    # length(d1m)   <- maxn
-    # length(d1deg) <- maxn
-    # length(d2deg) <- maxn
-    # 
-    # rds <- cbind(d1m, dist_deg = angle_diff_deg_vec(d1deg, d2deg))
-    # #print(rds)
-    # 
-    # 
-    # 
-    # ####sometimes we don't need to merge the column
-    # if (ncol(rds) == 2) {
-    #   rds[is.na(rds)] <- 0
-    #   dist <- c(rds[,1]+rds[,2])
-    #   dist[dist == 0] <- NA
-    # }
-    # else {
-    #   dist <- rds
-    # }
-    # 
-    # if (length(dist) != 0) {
-    #   dist <- round(dist,2)
-    # }
-    # 
-    # #Add unities on the last column
-    # for (i in 1:length(typ)) {
-    #   if (!is.na(typ[[i]]) && !is.na(dist[[i]]) && typ[[i]] == "theme-direction"){
-    #     dist[[i]] <- paste(dist[[i]], "°")
-    #   }
-    #   if (!is.na(typ[[i]]) && !is.na(dist[[i]]) && (typ[[i]] == "nav-flag" || typ[[i]] == "theme-loc")) {
-    #     dist[[i]] <- paste(dist[[i]], "m")
-    #   }
-    # }
-    
-    task_type <- as.character(unlist(typ))
-    n <- length(task_type)
-    
-    d1m   <- suppressWarnings(as.numeric(unlist(dist1_m)))
-    d1deg <- num(unlist(dist1_deg))
-    d2deg <- num(unlist(dist2_deg))
-    
-    length(d1m)   <- n
-    length(d1deg) <- n
-    length(d2deg) <- n
-    
-    deg_err <- angle_diff_deg_vec(d1deg, d2deg)
-    
-    # logical masks (TRUE/FALSE length n)
-    mask_dir <- !is.na(task_type) & task_type == "theme-direction"
-    mask_m   <- !is.na(task_type) & task_type %in% c("nav-flag", "theme-loc")
-    
-    dist_num <- rep(NA_real_, n)
-    dist_num[mask_dir] <- deg_err[mask_dir]
-    dist_num[mask_m]   <- d1m[mask_m]
-    
-    # --- PATCH 4B: manager rule for navigation error display ---
-    correct_vec <- as.logical(unlist(dist_correct))
-    acc_m_vec   <- suppressWarnings(as.numeric(unlist(dist_acc_m)))
-    
-    length(correct_vec) <- n
-    length(acc_m_vec)   <- n
-    
-    dist_txt <- rep(NA_character_, n)
-    
-    # Direction tasks: show error ONLY if incorrect / unknown
-    show_dir <- mask_dir & !is.na(deg_err) & (is.na(correct_vec) | correct_vec == FALSE)
-    dist_txt[show_dir] <- paste0(round(deg_err[show_dir], 2), " °")
-    
-    # Navigation/distance tasks: show blank if correct; else show (distance - accuracy)
-    nav_raw <- d1m
-    nav_err <- pmax(nav_raw - acc_m_vec, 0)
-    
-    show_nav <- mask_m & !is.na(nav_raw) & (is.na(correct_vec) | correct_vec == FALSE)
-    dist_txt[show_nav] <- paste0(round(nav_err[show_nav], 2), " m")
-    
-    dist <- dist_txt
-    # --- END PATCH 4B ---
-    
-    
-    
-    
-    
-    
     
     
     
