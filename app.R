@@ -44,6 +44,45 @@ fetch_games_data_from_server <- function(url, token) {
   }
 }
 
+# ── API helpers for share/unshare feature ────────────────────────────
+# The existing fetch_games_data_from_server() only supports GET.
+# These two helpers add POST/DELETE and a generic GET that returns both
+# status code and parsed body, so the share UI can react to errors.
+
+# POST or DELETE JSON to an API endpoint.
+# Used by the share modal to add/remove emails from game.sharedWith.
+api_request <- function(url, token, body = list(), method = "POST") {
+  auth_header <- paste("Bearer", token)
+  if (method == "DELETE") {
+    res <- httr::DELETE(url, add_headers(Authorization = auth_header),
+                        body = body, encode = "json",
+                        content_type_json())
+  } else {
+    res <- httr::POST(url, add_headers(Authorization = auth_header),
+                      body = body, encode = "json",
+                      content_type_json())
+  }
+  # Return status + parsed body so callers can check for errors and
+  # update the UI with the server's response (e.g. updated sharedWith list).
+  list(
+    status = status_code(res),
+    data = tryCatch(fromJSON(content(res, "text", encoding = "UTF-8")),
+                    error = function(e) list())
+  )
+}
+
+# GET JSON from an API endpoint, returning status + body.
+# Used to fetch the current sharedWith list when the modal opens.
+api_get <- function(url, token) {
+  auth_header <- paste("Bearer", token)
+  res <- httr::GET(url, add_headers(Authorization = auth_header))
+  list(
+    status = status_code(res),
+    data = tryCatch(fromJSON(content(res, "text", encoding = "UTF-8")),
+                    error = function(e) list())
+  )
+}
+
 # commited out as there was an issue that it works fine locally but not on the server
 # Get Git version and commit time of latest commit in main branch
 # git_version <- tryCatch({
@@ -257,6 +296,12 @@ ui <- page_sidebar(
       )
     ),
     
+    # Share button — appears once a game is selected
+    conditionalPanel(
+      condition = "typeof window.location.search.match(/token=([^&]+)/) !== 'undefined' && window.location.search.match(/token=([^&]+)/) !== null",
+      uiOutput("share_button_ui")
+    ),
+
     #filter 2 - JSON file selection
     conditionalPanel(
       condition = "typeof window.location.search.match(/token=([^&]+)/) !== 'undefined' && window.location.search.match(/token=([^&]+)/) !== null",
@@ -1038,6 +1083,7 @@ server <- function(input, output, session) {
   
   
   
+  # apiURL_rv <- reactiveVal("http://localhost:3000")
   apiURL_rv <- reactiveVal("https://api.geogami.uni-muenster.de")
   
   # Observe the URL query string for the token parameter
@@ -4517,8 +4563,172 @@ server <- function(input, output, session) {
       setwd(oldwd)
     }
   )
-  
-  
+
+
+  # ── Share game tracks ──────────────────────────────────────────────
+  # This section lets the game creator grant other GeoGami users access
+  # to view the tracks of a specific game via the dashboard.
+  #
+  # How it works:
+  # - The creator selects a game in the sidebar and clicks "Share game tracks".
+  # - A modal opens showing an email input and the list of currently-shared users.
+  # - Adding an email calls POST /game/:id/share on the server, which pushes
+  #   the email into the game's sharedWith array.
+  # - Removing an email calls DELETE /game/:id/share to revoke access.
+  # - The recipient sees the shared game in their own dashboard the next time
+  #   they open it — getUserGames now includes games where sharedWith contains
+  #   the authenticated user's email.
+
+  # Reactive value holding the current shared-with emails for the selected game.
+  shared_emails_rv <- reactiveVal(character(0))
+
+  # Show the share button only when a game is selected in the sidebar.
+  output$share_button_ui <- renderUI({
+    req(input$selected_games)
+    div(
+      style = "margin-bottom: 10px;",
+      actionButton("open_share_modal", "Share game tracks",
+                   icon = icon("share-alt"),
+                   style = "width: 100%;")
+    )
+  })
+
+  # When the share button is clicked: fetch the current shared list from the
+  # server and open a modal dialog.
+  observeEvent(input$open_share_modal, {
+    req(input$selected_games, accessToken_rv(), apiURL_rv())
+
+    # Fetch who this game is already shared with.
+    game_id <- input$selected_games
+    url <- paste0(apiURL_rv(), "/game/", game_id, "/share")
+    result <- api_get(url, accessToken_rv())
+
+    if (result$status == 200 && !is.null(result$data$sharedWith)) {
+      shared_emails_rv(result$data$sharedWith)
+    } else {
+      shared_emails_rv(character(0))
+    }
+
+    showModal(modalDialog(
+      title = "Share game tracks",
+      size = "m",
+      easyClose = TRUE,
+
+      p("Grant other GeoGami users access to view this game's tracks by entering their email."),
+
+      # Email input + share button in a horizontal row.
+      div(
+        style = "display: flex; gap: 8px; align-items: flex-end;",
+        div(style = "flex: 1;",
+            textInput("share_email_input", "Email address:", placeholder = "user@example.com")
+        ),
+        actionButton("share_add_btn", "Share", icon = icon("plus"),
+                     class = "btn-primary", style = "margin-bottom: 15px;")
+      ),
+
+      # Dynamic list of currently-shared emails (rendered below).
+      uiOutput("shared_list_ui"),
+
+      footer = modalButton("Close")
+    ))
+  })
+
+  # Render the list of emails the game is currently shared with.
+  # Each email gets a small "X" button to revoke access.
+  output$shared_list_ui <- renderUI({
+    emails <- shared_emails_rv()
+    if (length(emails) == 0) {
+      return(p(style = "color: #888;", "Not shared with anyone yet."))
+    }
+
+    tags$div(
+      tags$h6(paste0("Shared with (", length(emails), "):")),
+      tags$ul(
+        style = "list-style: none; padding-left: 0;",
+        lapply(seq_along(emails), function(i) {
+          tags$li(
+            style = "display: flex; align-items: center; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #eee;",
+            tags$span(emails[i]),
+            actionButton(
+              inputId = paste0("remove_share_", i),
+              label = NULL,
+              icon = icon("times"),
+              class = "btn-sm btn-outline-danger",
+              style = "padding: 2px 8px;"
+            )
+          )
+        })
+      )
+    )
+  })
+
+  # Handle the "Share" button click: validate email, POST to server,
+  # update the reactive list, and clear the input.
+  observeEvent(input$share_add_btn, {
+    req(input$selected_games, accessToken_rv(), apiURL_rv())
+
+    email <- trimws(tolower(input$share_email_input))
+    if (!grepl("@", email)) {
+      showNotification("Please enter a valid email address.", type = "warning")
+      return()
+    }
+
+    game_id <- input$selected_games
+    url <- paste0(apiURL_rv(), "/game/", game_id, "/share")
+
+    # Debug: log the request details to the R console
+    message("=== SHARE DEBUG ===")
+    message("URL: ", url)
+    message("Email: ", email)
+    message("Token (first 20 chars): ", substr(accessToken_rv(), 1, 20), "...")
+
+    result <- api_request(url, accessToken_rv(), body = list(emails = list(email)), method = "POST")
+
+    # Debug: log the response
+    message("Status: ", result$status)
+    message("Response: ", toJSON(result$data, auto_unbox = TRUE))
+    message("===================")
+
+    if (result$status == 200) {
+      # Server returns the full updated sharedWith array — use it directly
+      # so the UI always reflects the server's state.
+      shared_emails_rv(result$data$sharedWith)
+      updateTextInput(session, "share_email_input", value = "")
+      showNotification(paste0("Shared with ", email), type = "message")
+    } else {
+      msg <- if (!is.null(result$data$message)) result$data$message else "Could not share."
+      showNotification(msg, type = "error")
+    }
+  })
+
+  # Dynamically observe the per-email "X" remove buttons.
+  # Each button's ID is "remove_share_N" where N is the position in the list.
+  # once = TRUE prevents duplicate observer registration on re-render.
+  observe({
+    emails <- shared_emails_rv()
+    lapply(seq_along(emails), function(i) {
+      btn_id <- paste0("remove_share_", i)
+      observeEvent(input[[btn_id]], {
+        req(input$selected_games, accessToken_rv(), apiURL_rv())
+
+        email_to_remove <- emails[i]
+        game_id <- input$selected_games
+        url <- paste0(apiURL_rv(), "/game/", game_id, "/share")
+        result <- api_request(url, accessToken_rv(),
+                              body = list(emails = list(email_to_remove)),
+                              method = "DELETE")
+
+        if (result$status == 200) {
+          shared_emails_rv(result$data$sharedWith)
+          showNotification(paste0("Removed ", email_to_remove), type = "message")
+        } else {
+          showNotification("Could not remove user.", type = "error")
+        }
+      }, ignoreInit = TRUE, once = TRUE)
+    })
+  })
+
+
 }
 
 shinyApp(ui, server)
