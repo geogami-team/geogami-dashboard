@@ -1504,15 +1504,17 @@ server <- function(input, output, session) {
            evts$task$evaluate[final_idx] %in% c("evalMapDirection","evalDirection"))
       
       if (is_dir) {
-        # Keep existing values unchanged for existing comparison/statistics behavior
+        # Keep these for existing Compare Players "Answer" column / map logic
         ans_b <- get_answer_bearing(final_idx, evts)
         cor_b <- get_correct_bearing(final_idx, evts)
-        err_deg <- angle_diff_deg(ans_b, cor_b)
         
-        # New table/export-only values requested by professor
+        # New table/export direction values
         dir_parts <- get_direction_components(final_idx, evts)
         viewing_direction <- dir_parts$viewing_direction
         pointing_direction <- dir_parts$pointing_direction
+        
+        # Make Compare Players error consistent with All tasks error
+        err_deg <- dir_parts$direction_error
       }
       
       dist_to_target_m <- get_task_error_m(evts, final_idx)
