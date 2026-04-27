@@ -5327,14 +5327,26 @@ server <- function(input, output, session) {
     message("Response: ", toJSON(result$data, auto_unbox = TRUE))
     message("===================")
 
+    # Use the server's message verbatim (it explains exactly which emails
+    # were added, skipped because they're the owner, or rejected because
+    # no account exists).
+    server_msg <- if (!is.null(result$data$message)) result$data$message else ""
+
     if (result$status == 200) {
-      # Server returns the full updated sharedWith array — use it directly
-      # so the UI always reflects the server's state.
       shared_emails_rv(result$data$sharedWith)
       updateTextInput(session, "share_email_input", value = "")
-      showNotification(paste0("Shared with ", email), type = "message")
+      msg <- 
+        if (nzchar(server_msg)) server_msg 
+        else paste0("Shared with ", email)
+      showNotification(msg, type = "message", duration = 6)
+    } else if (result$status == 400 && nzchar(server_msg)) {
+      # 400 = nothing was actually shared (e.g. owner email or no account).
+      # Show the server's explanation as a warning, not a hard error.
+      showNotification(server_msg, type = "warning", duration = 8)
     } else {
-      msg <- if (!is.null(result$data$message)) result$data$message else "Could not share."
+      msg <- 
+        if (nzchar(server_msg)) server_msg 
+        else "Could not share."
       showNotification(msg, type = "error")
     }
   })
