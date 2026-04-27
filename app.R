@@ -562,6 +562,121 @@ server <- function(input, output, session) {
     num(a2)
   }
   
+  # ---- Direction column helpers for All tasks table STARTS  ----
+  # These helpers ONLY expose values in the table/export.
+  # They do NOT change correctness, score, map rendering, or existing error logic.
+  
+  safe_scalar <- function(x) {
+    if (is.null(x) || length(x) == 0) return(NA)
+    
+    if (is.list(x) || is.data.frame(x)) {
+      x <- unlist(x, use.names = FALSE)
+    }
+    
+    if (length(x) == 0) return(NA)
+    x[1]
+  }
+  
+  normalize_deg <- function(x) {
+    x <- num(x)
+    ifelse(is.finite(x), ((x %% 360) + 360) %% 360, NA_real_)
+  }
+  
+  format_bearing_deg <- function(x, digits = 2) {
+    x <- normalize_deg(x)
+    out <- rep(NA_character_, length(x))
+    ok <- is.finite(x)
+    out[ok] <- paste0(round(x[ok], digits), " °")
+    out
+  }
+  
+  get_direction_components <- function(j, evts) {
+    task_type <- try(safe_scalar(evts$task$type[j]), silent = TRUE)
+    task_type <- if (inherits(task_type, "try-error")) NA_character_ else as.character(task_type)
+    
+    eval_type <- try(safe_scalar(evts$task$evaluate[j]), silent = TRUE)
+    eval_type <- if (inherits(eval_type, "try-error")) NA_character_ else as.character(eval_type)
+    
+    is_dir <- (!is.na(task_type) && task_type == "theme-direction") ||
+      (!is.na(eval_type) && eval_type %in% c("evalMapDirection", "evalDirection"))
+    
+    if (!is_dir) {
+      return(list(
+        viewing_direction = NA_real_,
+        pointing_direction = NA_real_,
+        direction_error = NA_real_
+      ))
+    }
+    
+    initial_avatar_bearing <- num(tryCatch(
+      safe_scalar(evts$task$question$initialAvatarPosition$bearing[j]),
+      error = function(e) NA
+    ))
+    
+    target_direction_bearing <- num(tryCatch(
+      safe_scalar(evts$task$question$direction$bearing[j]),
+      error = function(e) NA
+    ))
+    
+    click_direction <- num(tryCatch(
+      safe_scalar(evts$answer$clickDirection[j]),
+      error = function(e) NA
+    ))
+    
+    answer_compass_heading <- num(tryCatch(
+      safe_scalar(evts$answer$compassHeading[j]),
+      error = function(e) NA
+    ))
+    
+    event_compass_heading <- num(tryCatch(
+      safe_scalar(evts$compassHeading[j]),
+      error = function(e) NA
+    ))
+    
+    viewing_direction <- NA_real_
+    pointing_direction <- NA_real_
+    
+    if (!is.na(eval_type) && eval_type == "evalMapDirection") {
+      # Player answers by marking a direction on the map.
+      # Viewing direction = actual/avatar view direction.
+      # Pointing direction = direction clicked/marked on the map.
+      viewing_direction <- initial_avatar_bearing
+      if (!is.finite(viewing_direction)) viewing_direction <- target_direction_bearing
+      
+      pointing_direction <- click_direction
+      
+    } else if (!is.na(eval_type) && eval_type == "evalDirection") {
+      # Player answers by turning/looking.
+      # Viewing direction = submitted/final compass heading.
+      # Pointing direction = target/map direction from the task.
+      viewing_direction <- answer_compass_heading
+      if (!is.finite(viewing_direction)) viewing_direction <- event_compass_heading
+      
+      pointing_direction <- target_direction_bearing
+      if (!is.finite(pointing_direction)) pointing_direction <- initial_avatar_bearing
+      
+    } else {
+      # Safe fallback for older/irregular direction tasks.
+      if (is.finite(click_direction)) {
+        viewing_direction <- initial_avatar_bearing
+        if (!is.finite(viewing_direction)) viewing_direction <- get_correct_bearing(j, evts)
+        pointing_direction <- click_direction
+      } else {
+        viewing_direction <- answer_compass_heading
+        if (!is.finite(viewing_direction)) viewing_direction <- event_compass_heading
+        pointing_direction <- target_direction_bearing
+        if (!is.finite(pointing_direction)) pointing_direction <- get_correct_bearing(j, evts)
+      }
+    }
+    
+    list(
+      viewing_direction = viewing_direction,
+      pointing_direction = pointing_direction,
+      direction_error = angle_diff_deg(viewing_direction, pointing_direction)
+    )
+  }
+  
+  # ---- Direction column helpers for All tasks table ENDS ----
   
   
   map_rv <- reactiveVal(NULL)
@@ -937,10 +1052,9 @@ server <- function(input, output, session) {
       (!is.na(eval_type) && eval_type %in% c("evalDistanceToPoint", "distanceToPoint"))
     
     if (is_dir) {
-      err_deg <- angle_diff_deg(
-        get_answer_bearing(idx, evts),
-        get_correct_bearing(idx, evts)
-      )
+      dir_parts <- get_direction_components(idx, evts)
+      err_deg <- dir_parts$direction_error
+      
       if (is.finite(err_deg)) return(paste0(round(err_deg, 2), " °"))
       return(NA_character_)
     }
@@ -1379,14 +1493,28 @@ server <- function(input, output, session) {
       cor_b <- NA_real_
       err_deg <- NA_real_
       
+      # new explicit direction columns for All tasks table/export
+      viewing_direction <- NA_real_
+      pointing_direction <- NA_real_
+      
+      
+      
       is_dir <- (!is.na(task_type) && task_type == "theme-direction") ||
         (!is.null(evts$task$evaluate) && !is.na(evts$task$evaluate[final_idx]) &&
            evts$task$evaluate[final_idx] %in% c("evalMapDirection","evalDirection"))
       
       if (is_dir) {
+        # Keep these for existing Compare Players "Answer" column / map logic
         ans_b <- get_answer_bearing(final_idx, evts)
         cor_b <- get_correct_bearing(final_idx, evts)
-        err_deg <- angle_diff_deg(ans_b, cor_b)
+        
+        # New table/export direction values
+        dir_parts <- get_direction_components(final_idx, evts)
+        viewing_direction <- dir_parts$viewing_direction
+        pointing_direction <- dir_parts$pointing_direction
+        
+        # Make Compare Players error consistent with All tasks error
+        err_deg <- dir_parts$direction_error
       }
       
       dist_to_target_m <- get_task_error_m(evts, final_idx)
@@ -1414,6 +1542,8 @@ server <- function(input, output, session) {
         ans_bearing = ans_b,
         cor_bearing = cor_b,
         err_deg = err_deg,
+        viewing_direction = viewing_direction,
+        pointing_direction = pointing_direction,
         dist_to_target_m = dist_to_target_m,
         dist_travel_m = dist_travel_m,
         error_txt = error_txt,
@@ -1472,6 +1602,8 @@ server <- function(input, output, session) {
       Answer = clean_export_text(sm$answer_txt),
       Time = ifelse(is.na(sm$time_s), NA_character_, paste0(sm$time_s, " s")),
       Tries = sm$tries,
+      `Viewing direction` = format_bearing_deg(sm$viewing_direction),
+      `Pointing direction` = format_bearing_deg(sm$pointing_direction),
       check.names = FALSE,
       stringsAsFactors = FALSE
     )
@@ -1481,6 +1613,8 @@ server <- function(input, output, session) {
     info_mask <- tolower(trimws(df$Type)) == "information"
     df$Answer[info_mask] <- NA_character_
     df$Tries[info_mask] <- 0
+    df[["Viewing direction"]][info_mask] <- NA_character_
+    df[["Pointing direction"]][info_mask] <- NA_character_
     df[["Error in °/m"]][info_mask] <- NA_character_
     
     df
@@ -2467,6 +2601,8 @@ server <- function(input, output, session) {
       Answer = sm$answer_txt,
       Time = ifelse(is.na(sm$time_s), NA_character_, paste0(sm$time_s, " s")),
       Tries = sm$tries,
+      `Viewing direction` = format_bearing_deg(sm$viewing_direction),
+      `Pointing direction` = format_bearing_deg(sm$pointing_direction),
       `Error in °/m` = sm$error_txt,
       check.names = FALSE,
       stringsAsFactors = FALSE
@@ -2475,6 +2611,8 @@ server <- function(input, output, session) {
     info_mask <- tolower(trimws(df$Type)) == "information"
     df$Answer[info_mask] <- NA_character_
     df$Tries[info_mask] <- 0
+    df[["Viewing direction"]][info_mask] <- NA_character_
+    df[["Pointing direction"]][info_mask] <- NA_character_
     df[["Error in °/m"]][info_mask] <- NA_character_
     
     
@@ -4084,6 +4222,8 @@ server <- function(input, output, session) {
       Answer = sm$answer_txt,
       Time = ifelse(is.na(sm$time_s), NA_character_, paste0(sm$time_s, " s")),
       Tries = sm$tries,
+      `Viewing direction` = format_bearing_deg(sm$viewing_direction),
+      `Pointing direction` = format_bearing_deg(sm$pointing_direction),
       `Error in °/m` = sm$error_txt,
       check.names = FALSE,
       stringsAsFactors = FALSE
@@ -4092,6 +4232,8 @@ server <- function(input, output, session) {
     info_mask <- tolower(trimws(df$Type)) == "information"
     df$Answer[info_mask] <- NA_character_
     df$Tries[info_mask] <- 0
+    df[["Viewing direction"]][info_mask] <- NA_character_
+    df[["Pointing direction"]][info_mask] <- NA_character_
     df[["Error in °/m"]][info_mask] <- NA_character_
     
     
