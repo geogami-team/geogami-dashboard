@@ -418,7 +418,7 @@ ui <- page_sidebar(
       ),
       conditionalPanel(
         condition = "output.tabLegend == 'Task type: Direction determination'",
-        card(h4("Answer and error for direction task"), tableOutput('cmp_table2'), downloadButton('save_table2', 'Save to csv'), style = "margin-top: 10px")
+        card(h4("Viewing Direction, Pointing Direction and Error for direction task"), tableOutput('cmp_table2'), downloadButton('save_table2', 'Save to csv'), style = "margin-top: 10px")
       )
     ),
     tabPanel(
@@ -1551,7 +1551,18 @@ server <- function(input, output, session) {
       )
     }
     
-    do.call(rbind, out)
+    res <- do.call(rbind, out)
+    
+    # Create a unique key per repeated task_id occurrence.
+    # This prevents task 1 from accidentally matching task 3, 5, 7, etc.
+    id_key <- as.character(res$task_id)
+    bad_id <- is.na(id_key) | id_key == "" | id_key == "NA"
+    id_key[bad_id] <- paste0("taskNo_", res$taskNo[bad_id])
+    
+    res$task_occurrence <- ave(seq_len(nrow(res)), id_key, FUN = seq_along)
+    res$task_key <- paste0(id_key, "__occ_", res$task_occurrence)
+    
+    res
   }
   
   # -------------------- END CANONICAL TASK SUMMARY --------------------
@@ -3589,7 +3600,7 @@ server <- function(input, output, session) {
       return()
     }
     
-    ref_task_id   <- ref_sum$task_id[num_value_num()]
+    ref_task_key  <- ref_sum$task_key[num_value_num()]
     ref_task_type <- ref_sum$task_type[num_value_num()]
     
     # Tables
@@ -3606,7 +3617,8 @@ server <- function(input, output, session) {
     cores <- data.frame(
       Name = character(0),
       Correct = character(0),
-      Answer = character(0),
+      `Viewing direction` = character(0),
+      `Pointing direction` = character(0),
       Error = character(0),
       check.names = FALSE,
       stringsAsFactors = FALSE
@@ -3618,7 +3630,7 @@ server <- function(input, output, session) {
       nm <- if (!is.null(tr$players) && length(tr$players)) tr$players[1] else paste0("Player_", i)
       
       sm <- task_summary(tr)
-      hit <- sm[sm$task_id == ref_task_id, , drop = FALSE]
+      hit <- sm[sm$task_key == ref_task_key, , drop = FALSE]
       
       if (!nrow(hit)) {
         ngts <- rbind(ngts, data.frame(
@@ -3634,7 +3646,7 @@ server <- function(input, output, session) {
       }
       
       # if the same task_id appears multiple times (back button / replay), use the LAST attempt
-      row <- hit[nrow(hit), , drop = FALSE]
+      row <- hit[1, , drop = FALSE]
       
       correct_txt <- row$status
       time_txt <- if (is.na(row$time_s)) NA_character_ else paste0(row$time_s, " s")
@@ -3658,14 +3670,15 @@ server <- function(input, output, session) {
       
       # Direction table only for theme-direction (Answer/Error in degrees)
       if (!is.na(ref_task_type) && ref_task_type == "theme-direction") {
-        ans_deg <- row$ans_bearing
-        err_deg <- row$err_deg
+        view_deg  <- row$viewing_direction
+        point_deg <- row$pointing_direction
         
         cores <- rbind(cores, data.frame(
           Name = nm,
           Correct = ifelse(is.na(correct_txt), NA_character_, correct_txt),
-          Answer = ifelse(is.na(ans_deg), NA_character_, paste0(round(ans_deg, 3), " °")),
-          Error  = ifelse(is.na(err_deg), NA_character_, paste0(round(err_deg, 3), " °")),
+          `Viewing direction` = format_bearing_deg(view_deg),
+          `Pointing direction` = format_bearing_deg(point_deg),
+          Error = row$error_txt,
           check.names = FALSE,
           stringsAsFactors = FALSE
         ))
@@ -3804,7 +3817,7 @@ server <- function(input, output, session) {
     output$save_table2 <- downloadHandler(
       filename = function() {
         game_name_safe <- sanitize_filename(get_selected_game_name())
-        paste0("Compare_", game_name_safe, "_answer_error_", Sys.Date(), ".csv")
+        paste0("Compare_", game_name_safe, "_direction_error_", Sys.Date(), ".csv")
       },
       content = function(file) {
         game_name <- get_selected_game_name()
@@ -3816,7 +3829,8 @@ server <- function(input, output, session) {
             Game = game_name,
             Player = df_out$Name,
             Correct = df_out$Correct,
-            Answer = df_out$Answer,
+            `Viewing direction` = df_out[["Viewing direction"]],
+            `Pointing direction` = df_out[["Pointing direction"]],
             Error = df_out$Error,
             check.names = FALSE,
             stringsAsFactors = FALSE
