@@ -35,7 +35,7 @@ The GeoGami Dashboard is an **R Shiny** application used by game creators, schol
 - [Quick start (Docker)](#quick-start-docker)
 - [Local development without Docker](#local-development-without-docker)
 - [How authentication works](#how-authentication-works)
-- [Sharing games](#sharing-games)
+- [User guide](#user-guide)
 - [Project layout](#project-layout)
 - [Deployment](#deployment)
 
@@ -101,19 +101,9 @@ apiURL_rv <- reactiveVal("https://api.geogami.uni-muenster.de")
 
 Change this when running against a local server during development.
 
-## Sharing games
+## User guide
 
-Game creators can grant other GeoGami users access to a specific game's tracks directly from the dashboard:
-
-1. Select the game in the sidebar.
-2. Click **"Share game tracks"**.
-3. Add one or more email addresses. The server validates each:
-   - rejects the game owner's own email
-   - rejects emails that don't belong to a registered GeoGami account
-4. Recipients see the shared game in their own dashboard the next time they open it.
-
-The feature is backed by these endpoints on the GeoGami server:
-`POST /game/:id/share`, `DELETE /game/:id/share`, `GET /game/:id/share`.
+End-user walkthrough of the sidebar and the five main-panel tabs (All tasks, Map, Pictures, Compare Players, Statistics) — including the **share game tracks** flow — lives in [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
 
 ## Project layout
 
