@@ -1,0 +1,77 @@
+# GeoGami Dashboard — User Guide
+
+This guide walks through the dashboard from an end-user perspective. For installation, deployment, and developer setup, see the [main README](../README.md).
+
+When you open the dashboard you see two areas: the **sidebar** on the left and the **main panel** with tabs on the right.
+
+## Sidebar
+
+1. **Choose Theme**
+   - Switch between **Light** and **Dark**.
+
+2. **Upload JSON file** *(optional)*
+   - Use this to inspect a single track JSON file directly from disk, without going through the API. Useful for offline analysis or debugging.
+
+3. **Select your game** *(visible when opened with a `?token=` from the GeoGami front-end)*
+   - Lists every game you have access to — games you created plus any games **shared** with you.
+   - Pick one to load its tracks into the dashboard.
+
+4. **Share game tracks** *(button appears once a game is selected)*
+   - Opens a dialog where you can grant or revoke access to this game's tracks for other GeoGami users by email.
+   - Add one or more addresses; the server validates each — it rejects the owner's own email and addresses that don't belong to a registered GeoGami account.
+   - Recipients see the shared game in their own dashboard the next time they open it.
+   - Backing endpoints: `POST /game/:id/share`, `DELETE /game/:id/share`, `GET /game/:id/share`.
+
+5. **Select the players**
+   - After picking a game, this dropdown lists every track session (one per player run).
+   - Choose one or more sessions to load their data into the main-panel tabs. Until you load at least one session, the right-hand tabs stay empty.
+   - **Download** button: exports the selected JSON track files as a zip.
+
+> **Task number selector:** unlike older versions, there is no longer a single "task number" field in the sidebar. Each tab that needs a task selection has its own **Selected Tasks** picker at the top of the tab, so you can compare different tasks across tabs without losing your place.
+
+## Main panel
+
+The main panel has five tabs. The first three analyse one or more of the loaded sessions individually; the last two compare across sessions.
+
+### 1. All tasks
+
+- **Selected Tasks** picker — narrow the table to one task, or leave it on the default to see every task.
+- **File selector** — pick which loaded session to inspect.
+- Shows a player-info box (overall score, summary stats) followed by the **Big table** with full per-task details.
+- **Save all to csv** button under the table exports the full per-player data.
+
+### 2. Map
+
+- **Selected Tasks** picker + **file selector** at the top.
+- Shows the player's trajectory and answer locations on a Leaflet map for the chosen task.
+- Map legend updates based on the task type (navigation, direction, etc.).
+- **Save the map** downloads the current view as an HTML file.
+
+### 3. Pictures
+
+- **Selected Tasks** picker + **file selector** at the top.
+- For picture-based tasks, displays the photo the player took, plus the assignment image where applicable.
+- Each image has its own **Download** button.
+- Tasks that don't produce a photo are greyed out in the task picker.
+
+### 4. Compare Players
+
+- **Selected Tasks** picker + multi-select **file selector** to choose the sessions you want to compare.
+- Displays a comparison table that adapts to the task type:
+  - For navigation tasks: **Route length versus time**.
+  - For direction-determination tasks: **Answer and error for direction task**.
+- **Save to csv** exports the comparison table.
+
+### 5. Statistics
+
+- **Selected Tasks** picker + multi-select **file selector**.
+- **Choose graphic to display** — switches between available chart types for the selected task type:
+  - Navigation tasks: **Time VS Distance** (scatter) or **Answer & Error** (pie chart).
+  - Direction / Free / Self-location / Object-location tasks: **Answer & Error** plot.
+- **Save to png** under each chart exports the visualization.
+
+## Tips
+
+- The sidebar collapses on tablet/phone widths — tap the toggle in the header to reopen it.
+- All tabs share the same loaded sessions, so a session picked in **Select the players** is available everywhere.
+- The dashboard reads its JWT from the `?token=` URL parameter. If you opened the page directly without a token, the game/session selectors stay hidden and only the **Upload JSON file** path is available.

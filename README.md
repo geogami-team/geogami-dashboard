@@ -1,66 +1,131 @@
-# GEOGAMI DASHBOARD
+<p align="center">
+  <img src=https://github.com/origami-team/geogami/blob/master/src/assets/icons/icon.png width="100" alt="GeoGami logo"/>
+</p>
 
-<img src="https://geogami.ifgi.de/pictures/logo/icon.png" alt="Logo" width="60">
+<h1 align="center">GeoGami Dashboard</h1>
 
-## 📑 Table of contents
-1. [Project presentation](#project-presentation)
-2. [Functionalities](#functionalities)
-3. [Tutorial](#tutorial)
-    * [Sidebar](#sidebar)
-    * [Main panel](#main-panel)
+<p align="center">
+  Interactive analytics dashboard for inspecting and evaluating <strong>GeoGami</strong> game tracks.
+</p>
 
-## Project presentation
-Welcome to the GeoGami dashboard ! The goal of the dashboard is to analyse your results after you play a game in GeoGami. Now you are able to see in details all information on your tasks.
+<p align="center">
+  <img src="https://img.shields.io/badge/R-Shiny-1A6FB5?logo=R" alt="R Shiny"/>
+  <img src="https://img.shields.io/badge/Leaflet-maps-199900?logo=leaflet" alt="Leaflet"/>
+  <img src="https://img.shields.io/badge/Docker-ready-2496ED?logo=docker" alt="Docker"/>
+</p>
 
-## Functionalities
-- 📌 Sum up your game in a table with all the key information.
-- 🗺️ See your trajectory and your answers on the map.
-- ✅ Check your answers, for example with pictures taken during the game.
-- 💡 Compare statistics with tables and graphics between different players.
-- 📤 Save all visualisations.
+The GeoGami Dashboard is an **R Shiny** application used by game creators, scholars, and admins to:
 
-## Tutorial
-When you open the GeoGami Dashboard, you can see two things : sidebar (on the left) - Main panel (on the right)
+- Browse the games they have access to (their own + games **shared** with them)
+- View track sessions for each game and inspect tasks, answers, photos, and a Leaflet map of the route
+- Export evaluation data and track maps
+- Grant or revoke access to a game's tracks for other GeoGami users (by email)
 
-### Sidebar
-1. **Choose theme**
-    * Light or dark theme
-2. **Select your game**
-    * Here you can get the list of all the games that have been made and played on GeoGami. 
-    * 'Type' the name of your game and select it in this field.
-3. **Select the players**
-    * Here you can see the list of GeoJSON files that match your game selection in the filter above. Initially, they are not loaded and are only displayed for the selection. Enter the name of the files you want to load. It is important to load the files here so that you can see the analysis in the tabs of the main panel (on the right).
-    * 'Reset Selection' button: this resets all the 'selected files' you chose, only in this field.
-4. **Enter the task number:**
-    * Here, you can provide the 'task number' of the tasks present in GeoJSON file. This is an important field and helps to show visualizations in the main panel. In particular, in the map, pictures, 'All of your plays' and 'Statistics Per Task' (Note: they are discussed in 'Main Panel' section below).
+> Companion projects:
+> - **Front-end UI**: [`../geogami-ui`](https://github.com/geogami-team/geogami)
+> - **Backend API**: [`../geogami-server`](https://github.com/geogami-team/origami-backend)
+> - **Virtual environment**: [`../geogami-virtual-environment-dev`](https://github.com/geogami-team/geogami-virtual-environment-dev)(../geogami-virtual-environment-dev)
 
-### Main panel
-**General overview:** We have 3 tabs in the main panel to get the general overview, for a single file, they are as follows :
-1. **All of your tasks**
-    * Here, all the files that you loaded in 'select the players' field under the 'sidebar panel', are present. You can individually analyse each file by selecting them from the 'choose file to view data' filter.
-    * Below this, you can see 'overall score'. This is the general score that was given as per all the correct answers earned by the participant.
-    * Afterwards, you get the whole 'Big table' for the general analysis. You can also save this big table using the 'save to csv' button.
-2. **Maps**
-    * Here, the map that you see by default, is affected by 2 fields, the 'file' that is currently chosen by you in 'choose file to view data' of this map tab and also, the 'task number' that you chose in 'Enter a task number'. You can change the task number (in the sidebar panel) and select another file in this 'map' tab, to see the required trajectory/interaction of the player on the map.
-    * Note: only those files are visible here that you loaded in 'select the players' field in the sidebar panel.
-    * You can also download these maps using the 'save the map' button present below
+---
 
-3. **Pictures**
-    * This tab is specifically made to analyse the 'picture task' Here, you can select the file from the field 'choose file to view data' to view the picture taken by the user for the 'picture task'.
-    * Note: only those files are visible here that you loaded in 'select the players' field in the sidebar panel.
+## Table of contents
 
-**Tabs for comparison:** We have two comparisons tabs in the main panel, they are as follows:
+- [Tech stack](#tech-stack)
+- [Prerequisites](#prerequisites)
+- [Quick start (Docker)](#quick-start-docker)
+- [Local development without Docker](#local-development-without-docker)
+- [How authentication works](#how-authentication-works)
+- [User guide](#user-guide)
+- [Project layout](#project-layout)
+- [Deployment](#deployment)
 
-4. **All of your plays**
-    * Here, you first choose multiple files that you want to compare in the 'Choose files to compare' field.
-    * Note: only those files are visible here that you loaded in 'select the players' field in the sidebar panel.
-    * Thereafter, you get a nice comparison view. You can change the 'Task number' on the sidebar panel, to compare that particular task for both the players.
-    * 'Save to CSV' button can be used to download the comparison analysis.
+---
 
-5. **Statistics per task**
-    * Here, you first choose multiple files that you want to compare in the 'Choose files to compare' field. 
-    * Note: only those files are visible here that you loaded in 'select the players' field in the sidebar panel.
-    * After that, another option that you have is the 'Choose Graphic to display', you can choose it as per your requirement.
-    * You can change the 'Task number' on the sidebar panel, to compare that particular task for both the players.
-    * In the end, you get the possible visualizations.
-    * You can save these visualizations using the 'Save to png' button present in the bottom left.
+## Tech stack
+
+| Area | Technology |
+|---|---|
+| Framework | R 4.x + Shiny |
+| UI | `bslib` themes, `shinyWidgets` |
+| Maps | `leaflet`, `htmlwidgets` |
+| Tables | `DT` |
+| HTTP | `httr` (calls the GeoGami API) |
+| Server | `rocker/shiny` (Docker) on port `3838` |
+
+## Prerequisites
+
+- **Docker** (recommended), or a local R 4.x install
+- A reachable **GeoGami server** (REST API)
+- A valid GeoGami **JWT** for any user with track-evaluation access
+
+## Quick start (Docker)
+
+```bash
+docker compose up -d        # Shiny on http://localhost:3838
+```
+
+`docker-compose.yml` mounts `app.R` from the host so iterative changes don't require a rebuild. To force a fresh build:
+
+```bash
+docker compose build --no-cache
+docker compose up
+```
+
+## Local development without Docker
+
+```r
+# inside the geogami-dashboard directory
+install.packages(c(
+  "shiny", "shinythemes", "DT", "wordcloud2", "ggplot2",
+  "stringr", "dplyr", "leaflet", "bslib", "htmlwidgets",
+  "httr", "jsonlite", "zip", "shinyWidgets"
+))
+shiny::runApp("app.R", port = 3838)
+```
+
+## How authentication works
+
+The dashboard does **not** present its own login screen. Users open the dashboard from the GeoGami front-end, which appends their JWT to the URL:
+
+```
+https://dashboard.example.com/?token=<JWT>
+```
+
+The Shiny app reads the `token` query parameter and uses it for all subsequent API calls (`Authorization: Bearer <token>`). Without a token the sidebar selectors stay hidden.
+
+The default API URL is hardcoded near the top of `app.R`:
+
+```r
+apiURL_rv <- reactiveVal("https://api.geogami.uni-muenster.de")
+```
+
+Change this when running against a local server during development.
+
+## User guide
+
+End-user walkthrough of the sidebar and the five main-panel tabs (All tasks, Map, Pictures, Compare Players, Statistics) — including the **share game tracks** flow — lives in [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
+
+## Project layout
+
+```
+.
+├── app.R                  # Single-file Shiny app (UI + server)
+├── www/                   # Static assets served by Shiny
+├── shiny-server.conf      # Configuration for the bundled shiny-server
+├── Dockerfile             # rocker/shiny image with required system + R packages
+└── docker-compose.yml     # Local stack
+```
+
+`app.R` is intentionally a single file to keep the deployment surface small. Helpers for HTTP calls (`fetch_games_data_from_server`, `api_request`, `api_get`) sit at the top, followed by the UI definition (`page_sidebar(...)`) and a `server <- function(input, output, session)` block.
+
+## Deployment
+
+The project deploys cleanly to anything that can run a Docker container with port 3838 exposed. Recommended setup:
+
+- Put a TLS-terminating reverse proxy in front (Caddy, nginx, Traefik).
+- Pass through `?token=` query parameters untouched.
+- Run alongside the GeoGami server so both share the same domain root (cookies aren't used; CORS is not an issue for token-based auth).
+
+## License
+
+MIT — see the parent project for citation information.
