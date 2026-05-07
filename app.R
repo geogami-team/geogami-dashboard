@@ -423,7 +423,7 @@ ui <- page_sidebar(
       ),
       conditionalPanel(
         condition = "output.tabLegend == 'Task type: Direction determination'",
-        card(h4("Viewing Direction, Pointing Direction and Error for direction task"), tableOutput('cmp_table2'), downloadButton('save_table2', 'Save to csv'), style = "margin-top: 10px")
+        card(h4("Direction Task Comparison"), tableOutput('cmp_table2'), downloadButton('save_table2', 'Save to csv'), style = "margin-top: 10px")
       )
     ),
     tabPanel(
@@ -3712,8 +3712,11 @@ server <- function(input, output, session) {
     cores <- data.frame(
       Name = character(0),
       Correct = character(0),
+      Time = character(0),
       `Viewing direction` = character(0),
+      `Final viewing direction` = character(0),
       `Pointing direction` = character(0),
+      `Rotation angle` = character(0),
       Error = character(0),
       check.names = FALSE,
       stringsAsFactors = FALSE
@@ -3737,6 +3740,22 @@ server <- function(input, output, session) {
           check.names = FALSE,
           stringsAsFactors = FALSE
         ))
+        
+        if (!is.na(ref_task_type) && ref_task_type == "theme-direction") {
+          cores <- rbind(cores, data.frame(
+            Name = nm,
+            Correct = "Task not played",
+            Time = NA_character_,
+            `Viewing direction` = NA_character_,
+            `Final viewing direction` = NA_character_,
+            `Pointing direction` = NA_character_,
+            `Rotation angle` = NA_character_,
+            Error = NA_character_,
+            check.names = FALSE,
+            stringsAsFactors = FALSE
+          ))
+        }
+        
         next
       }
       
@@ -3765,14 +3784,19 @@ server <- function(input, output, session) {
       
       # Direction table only for theme-direction (Answer/Error in degrees)
       if (!is.na(ref_task_type) && ref_task_type == "theme-direction") {
-        view_deg  <- row$viewing_direction
-        point_deg <- row$pointing_direction
+        view_deg       <- row$viewing_direction
+        final_view_deg <- row$final_viewing_direction
+        point_deg      <- row$pointing_direction
+        rotation_deg   <- row$rotation_angle
         
         cores <- rbind(cores, data.frame(
           Name = nm,
           Correct = ifelse(is.na(correct_txt), NA_character_, correct_txt),
+          Time = time_txt,
           `Viewing direction` = format_bearing_deg(view_deg),
+          `Final viewing direction` = format_bearing_deg(final_view_deg),
           `Pointing direction` = format_bearing_deg(point_deg),
+          `Rotation angle` = format_angle_deg(rotation_deg),
           Error = row$error_txt,
           check.names = FALSE,
           stringsAsFactors = FALSE
@@ -3932,8 +3956,11 @@ server <- function(input, output, session) {
             Game = game_name,
             Player = df_out$Name,
             Correct = df_out$Correct,
+            Time = df_out$Time,
             `Viewing direction` = df_out[["Viewing direction"]],
+            `Final viewing direction` = df_out[["Final viewing direction"]],
             `Pointing direction` = df_out[["Pointing direction"]],
+            `Rotation angle` = df_out[["Rotation angle"]],
             Error = df_out$Error,
             check.names = FALSE,
             stringsAsFactors = FALSE
