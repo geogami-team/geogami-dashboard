@@ -413,12 +413,17 @@ ui <- page_sidebar(
       ),
       textOutput("tabLegend"),
       conditionalPanel(
-        condition = "output.tabLegend == 'Task type: Navigation to flag' || output.tabLegend == 'Task type: Navigation with arrow' || output.tabLegend == 'Task type: Navigation via text' || output.tabLegend == 'Task type: Navigation via photo'",
-        card(h4("Route length versus time"), tableOutput('cmp_table1'), downloadButton('save_table1', 'Save to csv'), style = "margin-top: 10px")
+        condition = "output.tabLegend == 'Task type: Navigation to flag' || output.tabLegend == 'Task type: Navigation with arrow' || output.tabLegend == 'Task type: Navigation via text' || output.tabLegend == 'Task type: Navigation via photo' || output.tabLegend == 'Task type: Free'",
+        card(
+          h4(textOutput("cmp_table1_title", inline = TRUE)),
+          tableOutput('cmp_table1'),
+          downloadButton('save_table1', 'Save to csv'),
+          style = "margin-top: 10px"
+        )
       ),
       conditionalPanel(
         condition = "output.tabLegend == 'Task type: Direction determination'",
-        card(h4("Viewing Direction, Pointing Direction and Error for direction task"), tableOutput('cmp_table2'), downloadButton('save_table2', 'Save to csv'), style = "margin-top: 10px")
+        card(h4("Direction Task Comparison"), tableOutput('cmp_table2'), downloadButton('save_table2', 'Save to csv'), style = "margin-top: 10px")
       )
     ),
     tabPanel(
@@ -470,7 +475,7 @@ ui <- page_sidebar(
                          selected = c("Answer & Error")
                        ), conditionalPanel(
                          condition = "input.graph_filter2 == 'Answer & Error'",
-                         card(card_header("Time vs distance scatter plot"), full_screen = TRUE, plotOutput('pie_chart2'),
+                         card(card_header("Pie chart"), full_screen = TRUE, plotOutput('pie_chart2'),
                               div(style = "border: 0px solid #ccc; padding: 10px; margin-top: 15px; border-radius: 8px;",
                                   downloadButton('save_picture2','Save to png')))
                        ),
@@ -3051,7 +3056,7 @@ server <- function(input, output, session) {
             style = "display: flex; gap: 10px; align-items: center; flex-wrap: wrap;",
             downloadButton('save_data', 'Save to CSV'),
             if (!is.null(input$selected_files) && length(input$selected_files) > 0) {
-              downloadButton('save_all_data', 'Save all to CSV')
+              downloadButton('save_all_data', 'Save All Players')
             }
           )
         )
@@ -3707,8 +3712,11 @@ server <- function(input, output, session) {
     cores <- data.frame(
       Name = character(0),
       Correct = character(0),
+      Time = character(0),
       `Viewing direction` = character(0),
+      `Final viewing direction` = character(0),
       `Pointing direction` = character(0),
+      `Rotation angle` = character(0),
       Error = character(0),
       check.names = FALSE,
       stringsAsFactors = FALSE
@@ -3732,6 +3740,22 @@ server <- function(input, output, session) {
           check.names = FALSE,
           stringsAsFactors = FALSE
         ))
+        
+        if (!is.na(ref_task_type) && ref_task_type == "theme-direction") {
+          cores <- rbind(cores, data.frame(
+            Name = nm,
+            Correct = "Task not played",
+            Time = NA_character_,
+            `Viewing direction` = NA_character_,
+            `Final viewing direction` = NA_character_,
+            `Pointing direction` = NA_character_,
+            `Rotation angle` = NA_character_,
+            Error = NA_character_,
+            check.names = FALSE,
+            stringsAsFactors = FALSE
+          ))
+        }
+        
         next
       }
       
@@ -3760,14 +3784,19 @@ server <- function(input, output, session) {
       
       # Direction table only for theme-direction (Answer/Error in degrees)
       if (!is.na(ref_task_type) && ref_task_type == "theme-direction") {
-        view_deg  <- row$viewing_direction
-        point_deg <- row$pointing_direction
+        view_deg       <- row$viewing_direction
+        final_view_deg <- row$final_viewing_direction
+        point_deg      <- row$pointing_direction
+        rotation_deg   <- row$rotation_angle
         
         cores <- rbind(cores, data.frame(
           Name = nm,
           Correct = ifelse(is.na(correct_txt), NA_character_, correct_txt),
+          Time = time_txt,
           `Viewing direction` = format_bearing_deg(view_deg),
+          `Final viewing direction` = format_bearing_deg(final_view_deg),
           `Pointing direction` = format_bearing_deg(point_deg),
+          `Rotation angle` = format_angle_deg(rotation_deg),
           Error = row$error_txt,
           check.names = FALSE,
           stringsAsFactors = FALSE
@@ -3797,6 +3826,14 @@ server <- function(input, output, session) {
     
     output$tabLegend   <- renderText({ paste("Task type:", t) })
     output$graphLegend <- renderText({ paste("Task type:", t) })
+    
+    output$cmp_table1_title <- renderText({
+      if (!is.na(ref_task_type) && ref_task_type == "free") {
+        "Free task comparison"
+      } else {
+        "Route length versus time"
+      }
+    })
     
     # ---------- Statistics outputs (pie + time chart) derived from SAME ngts ----------
     # Pie (Correct vs Incorrect)
@@ -3876,11 +3913,24 @@ server <- function(input, output, session) {
       content  = function(file){ png(file); print(time_chart); dev.off() }
     )
     
+    # ---------- Filename part for selected comparison task --START ----------
+    selected_task_no <- ref_sum$taskNo[num_value_num()]
+    
+    selected_task_type_label <- t
+    if (is.null(selected_task_type_label) || is.na(selected_task_type_label) || !nzchar(selected_task_type_label)) {
+      selected_task_type_label <- "Unknown_Task_Type"
+    }
+    
+    selected_task_file_part <- sanitize_filename(
+      paste0("Task_", selected_task_no, "_", selected_task_type_label)
+    )
+    # ---------- Filename part for selected comparison task -- END ----------
+    
     # Save CSVs
     output$save_table1 <- downloadHandler(
       filename = function() {
         game_name_safe <- sanitize_filename(get_selected_game_name())
-        paste0("Compare_", game_name_safe, "_route_length_vs_time_", Sys.Date(), ".csv")
+        paste0("Compare_", game_name_safe, "_", selected_task_file_part, "_route_length_vs_time_", Sys.Date(), ".csv")
       },
       content = function(file) {
         game_name <- get_selected_game_name()
@@ -3907,7 +3957,7 @@ server <- function(input, output, session) {
     output$save_table2 <- downloadHandler(
       filename = function() {
         game_name_safe <- sanitize_filename(get_selected_game_name())
-        paste0("Compare_", game_name_safe, "_direction_error_", Sys.Date(), ".csv")
+        paste0("Compare_", game_name_safe, "_", selected_task_file_part, "_direction_error_", Sys.Date(), ".csv")
       },
       content = function(file) {
         game_name <- get_selected_game_name()
@@ -3919,8 +3969,11 @@ server <- function(input, output, session) {
             Game = game_name,
             Player = df_out$Name,
             Correct = df_out$Correct,
+            Time = df_out$Time,
             `Viewing direction` = df_out[["Viewing direction"]],
+            `Final viewing direction` = df_out[["Final viewing direction"]],
             `Pointing direction` = df_out[["Pointing direction"]],
+            `Rotation angle` = df_out[["Rotation angle"]],
             Error = df_out$Error,
             check.names = FALSE,
             stringsAsFactors = FALSE
