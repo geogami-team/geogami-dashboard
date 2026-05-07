@@ -3913,11 +3913,24 @@ server <- function(input, output, session) {
       content  = function(file){ png(file); print(time_chart); dev.off() }
     )
     
+    # ---------- Filename part for selected comparison task --START ----------
+    selected_task_no <- ref_sum$taskNo[num_value_num()]
+    
+    selected_task_type_label <- t
+    if (is.null(selected_task_type_label) || is.na(selected_task_type_label) || !nzchar(selected_task_type_label)) {
+      selected_task_type_label <- "Unknown_Task_Type"
+    }
+    
+    selected_task_file_part <- sanitize_filename(
+      paste0("Task_", selected_task_no, "_", selected_task_type_label)
+    )
+    # ---------- Filename part for selected comparison task -- END ----------
+    
     # Save CSVs
     output$save_table1 <- downloadHandler(
       filename = function() {
         game_name_safe <- sanitize_filename(get_selected_game_name())
-        paste0("Compare_", game_name_safe, "_route_length_vs_time_", Sys.Date(), ".csv")
+        paste0("Compare_", game_name_safe, "_", selected_task_file_part, "_route_length_vs_time_", Sys.Date(), ".csv")
       },
       content = function(file) {
         game_name <- get_selected_game_name()
@@ -3944,7 +3957,7 @@ server <- function(input, output, session) {
     output$save_table2 <- downloadHandler(
       filename = function() {
         game_name_safe <- sanitize_filename(get_selected_game_name())
-        paste0("Compare_", game_name_safe, "_direction_error_", Sys.Date(), ".csv")
+        paste0("Compare_", game_name_safe, "_", selected_task_file_part, "_direction_error_", Sys.Date(), ".csv")
       },
       content = function(file) {
         game_name <- get_selected_game_name()
