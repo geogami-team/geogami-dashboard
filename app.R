@@ -470,7 +470,7 @@ ui <- page_sidebar(
                          selected = c("Answer & Error")
                        ), conditionalPanel(
                          condition = "input.graph_filter2 == 'Answer & Error'",
-                         card(card_header("Time vs distance scatter plot"), full_screen = TRUE, plotOutput('pie_chart2'),
+                         card(card_header("Pie chart"), full_screen = TRUE, plotOutput('pie_chart2'),
                               div(style = "border: 0px solid #ccc; padding: 10px; margin-top: 15px; border-radius: 8px;",
                                   downloadButton('save_picture2','Save to png')))
                        ),
@@ -3051,7 +3051,7 @@ server <- function(input, output, session) {
             style = "display: flex; gap: 10px; align-items: center; flex-wrap: wrap;",
             downloadButton('save_data', 'Save to CSV'),
             if (!is.null(input$selected_files) && length(input$selected_files) > 0) {
-              downloadButton('save_all_data', 'Save all to CSV')
+              downloadButton('save_all_data', 'Save All Players')
             }
           )
         )
