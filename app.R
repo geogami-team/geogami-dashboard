@@ -413,8 +413,13 @@ ui <- page_sidebar(
       ),
       textOutput("tabLegend"),
       conditionalPanel(
-        condition = "output.tabLegend == 'Task type: Navigation to flag' || output.tabLegend == 'Task type: Navigation with arrow' || output.tabLegend == 'Task type: Navigation via text' || output.tabLegend == 'Task type: Navigation via photo'",
-        card(h4("Route length versus time"), tableOutput('cmp_table1'), downloadButton('save_table1', 'Save to csv'), style = "margin-top: 10px")
+        condition = "output.tabLegend == 'Task type: Navigation to flag' || output.tabLegend == 'Task type: Navigation with arrow' || output.tabLegend == 'Task type: Navigation via text' || output.tabLegend == 'Task type: Navigation via photo' || output.tabLegend == 'Task type: Free'",
+        card(
+          h4(textOutput("cmp_table1_title", inline = TRUE)),
+          tableOutput('cmp_table1'),
+          downloadButton('save_table1', 'Save to csv'),
+          style = "margin-top: 10px"
+        )
       ),
       conditionalPanel(
         condition = "output.tabLegend == 'Task type: Direction determination'",
@@ -3797,6 +3802,14 @@ server <- function(input, output, session) {
     
     output$tabLegend   <- renderText({ paste("Task type:", t) })
     output$graphLegend <- renderText({ paste("Task type:", t) })
+    
+    output$cmp_table1_title <- renderText({
+      if (!is.na(ref_task_type) && ref_task_type == "free") {
+        "Free task comparison"
+      } else {
+        "Route length versus time"
+      }
+    })
     
     # ---------- Statistics outputs (pie + time chart) derived from SAME ngts ----------
     # Pie (Correct vs Incorrect)
