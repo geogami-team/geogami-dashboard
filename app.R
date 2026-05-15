@@ -780,6 +780,61 @@ server <- function(input, output, session) {
     )
   }
   
+  
+  ###### STARTING - helper function for another column of all tasks main tab panel i.e Final Answer for direction determination####
+  
+  get_final_answer_direction <- function(j, evts) {
+    task_type <- try(safe_scalar(evts$task$type[j]), silent = TRUE)
+    task_type <- if (inherits(task_type, "try-error")) NA_character_ else as.character(task_type)
+    
+    eval_type <- try(safe_scalar(evts$task$evaluate[j]), silent = TRUE)
+    eval_type <- if (inherits(eval_type, "try-error")) NA_character_ else as.character(eval_type)
+    
+    is_dir <- (!is.na(task_type) && task_type == "theme-direction") ||
+      (!is.na(eval_type) && eval_type %in% c("evalMapDirection", "evalDirection"))
+    
+    if (!is_dir) {
+      return(NA_real_)
+    }
+    
+    dir_parts <- get_direction_components(j, evts)
+    
+    # evalDirection:
+    # player rotates/faces a direction.
+    # submitted answer = answer$compassHeading = Final viewing direction
+    if (!is.na(eval_type) && eval_type == "evalDirection") {
+      return(dir_parts$final_viewing_direction)
+    }
+    
+    # evalMapDirection:
+    # player marks/clicks a direction on the map.
+    # submitted answer = answer$clickDirection = Pointing direction
+    if (!is.na(eval_type) && eval_type == "evalMapDirection") {
+      return(dir_parts$pointing_direction)
+    }
+    
+    # Safe fallback for older/irregular direction tasks:
+    # if clickDirection exists, treat pointing direction as final answer;
+    # otherwise use final viewing direction.
+    click_direction <- num(tryCatch(
+      safe_scalar(evts$answer$clickDirection[j]),
+      error = function(e) NA
+    ))
+    
+    if (is.finite(click_direction)) {
+      return(dir_parts$pointing_direction)
+    }
+    
+    dir_parts$final_viewing_direction
+  }
+  
+  ###### ENDING - helper function for another column of all tasks main tab panel i.e Final Answer for direction determination####
+  
+  
+  
+  
+  
+  
   # ---- Direction column helpers for All tasks table ENDS ----
   
   
@@ -1602,6 +1657,7 @@ server <- function(input, output, session) {
       final_viewing_direction <- NA_real_
       pointing_direction <- NA_real_
       rotation_angle <- NA_real_
+      final_answer_direction <- NA_real_
       
       
       
@@ -1624,6 +1680,14 @@ server <- function(input, output, session) {
         
         # Rotation from initial viewing direction to final viewing direction
         rotation_angle <- get_rotation_angle(final_idx, evts)
+        
+        # Final submitted answer direction:
+        # evalDirection    -> final viewing direction
+        # evalMapDirection -> pointing direction
+        # If the task was not submitted, keep this blank.
+        if (has_ok_click) {
+          final_answer_direction <- get_final_answer_direction(final_idx, evts)
+        }
         
         # Make Compare Players error consistent with All tasks error
         err_deg <- dir_parts$direction_error
@@ -1658,6 +1722,7 @@ server <- function(input, output, session) {
         final_viewing_direction = final_viewing_direction,
         pointing_direction = pointing_direction,
         rotation_angle = rotation_angle,
+        final_answer_direction = final_answer_direction,
         dist_to_target_m = dist_to_target_m,
         dist_travel_m = dist_travel_m,
         error_txt = error_txt,
@@ -1789,6 +1854,7 @@ server <- function(input, output, session) {
       `Final viewing direction` = format_bearing_deg(sm$final_viewing_direction),
       `Pointing direction` = format_bearing_deg(sm$pointing_direction),
       `Rotation angle` = format_angle_deg(sm$rotation_angle),
+      `Final Answer` = format_bearing_deg(sm$final_answer_direction),
       check.names = FALSE,
       stringsAsFactors = FALSE
     )
@@ -1802,6 +1868,7 @@ server <- function(input, output, session) {
     df[["Final viewing direction"]][info_mask] <- NA_character_
     df[["Pointing direction"]][info_mask] <- NA_character_
     df[["Rotation angle"]][info_mask] <- NA_character_
+    df[["Final Answer"]][info_mask] <- NA_character_
     df[["Error in °/m"]][info_mask] <- NA_character_
     
     # For Save All Players CSV: save only the visible shortened information text
@@ -2795,6 +2862,7 @@ server <- function(input, output, session) {
       `Final viewing direction` = format_bearing_deg(sm$final_viewing_direction),
       `Pointing direction` = format_bearing_deg(sm$pointing_direction),
       `Rotation angle` = format_angle_deg(sm$rotation_angle),
+      `Final Answer` = format_bearing_deg(sm$final_answer_direction),
       `Error in °/m` = sm$error_txt,
       check.names = FALSE,
       stringsAsFactors = FALSE
@@ -2807,6 +2875,7 @@ server <- function(input, output, session) {
     df[["Final viewing direction"]][info_mask] <- NA_character_
     df[["Pointing direction"]][info_mask] <- NA_character_
     df[["Rotation angle"]][info_mask] <- NA_character_
+    df[["Final Answer"]][info_mask] <- NA_character_
     df[["Error in °/m"]][info_mask] <- NA_character_
     # For dashboard display: show max 2-line information text, full text on hover
     df <- apply_info_assignment_limit(df, html = TRUE)
@@ -3814,6 +3883,7 @@ server <- function(input, output, session) {
       `Final viewing direction` = character(0),
       `Pointing direction` = character(0),
       `Rotation angle` = character(0),
+      `Final Answer` = character(0),
       Error = character(0),
       check.names = FALSE,
       stringsAsFactors = FALSE
@@ -3848,6 +3918,7 @@ server <- function(input, output, session) {
             `Final viewing direction` = NA_character_,
             `Pointing direction` = NA_character_,
             `Rotation angle` = NA_character_,
+            `Final Answer` = NA_character_,
             Error = NA_character_,
             check.names = FALSE,
             stringsAsFactors = FALSE
@@ -3904,6 +3975,7 @@ server <- function(input, output, session) {
         final_view_deg <- row$final_viewing_direction
         point_deg      <- row$pointing_direction
         rotation_deg   <- row$rotation_angle
+        final_answer_deg <- row$final_answer_direction
         
         cores <- rbind(cores, data.frame(
           Name = nm,
@@ -3913,6 +3985,7 @@ server <- function(input, output, session) {
           `Final viewing direction` = format_bearing_deg(final_view_deg),
           `Pointing direction` = format_bearing_deg(point_deg),
           `Rotation angle` = format_angle_deg(rotation_deg),
+          `Final Answer` = format_bearing_deg(final_answer_deg),
           Error = row$error_txt,
           check.names = FALSE,
           stringsAsFactors = FALSE
@@ -4129,6 +4202,7 @@ server <- function(input, output, session) {
             `Final viewing direction` = df_out[["Final viewing direction"]],
             `Pointing direction` = df_out[["Pointing direction"]],
             `Rotation angle` = df_out[["Rotation angle"]],
+            `Final Answer` = df_out[["Final Answer"]],
             Error = df_out$Error,
             check.names = FALSE,
             stringsAsFactors = FALSE
@@ -4538,6 +4612,7 @@ server <- function(input, output, session) {
       `Final viewing direction` = format_bearing_deg(sm$final_viewing_direction),
       `Pointing direction` = format_bearing_deg(sm$pointing_direction),
       `Rotation angle` = format_angle_deg(sm$rotation_angle),
+      `Final Answer` = format_bearing_deg(sm$final_answer_direction),
       `Error in °/m` = sm$error_txt,
       check.names = FALSE,
       stringsAsFactors = FALSE
@@ -4550,6 +4625,7 @@ server <- function(input, output, session) {
     df[["Final viewing direction"]][info_mask] <- NA_character_
     df[["Pointing direction"]][info_mask] <- NA_character_
     df[["Rotation angle"]][info_mask] <- NA_character_
+    df[["Final Answer"]][info_mask] <- NA_character_
     df[["Error in °/m"]][info_mask] <- NA_character_
     
     # For dashboard display: show max 2-line information text, full text on hover
