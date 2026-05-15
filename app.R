@@ -3789,6 +3789,7 @@ server <- function(input, output, session) {
     # Tables
     ngts <- data.frame(
       Name = character(0),
+      Answer = character(0),
       Correct = character(0),
       Time = character(0),
       `Distance travelled` = character(0),
@@ -3821,6 +3822,7 @@ server <- function(input, output, session) {
       if (!nrow(hit)) {
         ngts <- rbind(ngts, data.frame(
           Name = nm,
+          Answer = "Task not played",
           Correct = "Task not played",
           Time = NA_character_,
           `Distance travelled` = NA_character_,
@@ -3859,9 +3861,27 @@ server <- function(input, output, session) {
       # - else (distance - accuracy) with 15m fallback
       dist_to_target_txt <- row$error_txt
       
+      
+      # STARTS : For free tasks, use the same Answer text as the All tasks big table
+      # Example: "Correct 700 m"
+      answer_txt <- row$answer_txt
+      
+      if (
+        is.null(answer_txt) ||
+        length(answer_txt) == 0 ||
+        is.na(answer_txt) ||
+        !nzchar(trimws(as.character(answer_txt)))
+      ) {
+        answer_txt <- correct_txt
+      }
+      
+      answer_txt <- as.character(answer_txt)
+      # ENDS : For free tasks, use the same Answer text as the All tasks big table
+      
       # Navigation-style table (also used in Statistics time-vs-distance)
       ngts <- rbind(ngts, data.frame(
         Name = nm,
+        Answer = answer_txt,
         Correct = ifelse(is.na(correct_txt), NA_character_, correct_txt),
         Time = time_txt,
         `Distance travelled` = dist_txt,
@@ -3893,7 +3913,17 @@ server <- function(input, output, session) {
     }
     
     # Render tables
-    output$cmp_table1 <- renderTable(ngts)
+    # Free tasks should only show: Name, Answer, Time
+    # Other route/navigation tasks keep the old columns
+    is_free_task <- isTRUE(!is.na(ref_task_type) && ref_task_type == "free")
+    
+    ngts_display <- if (is_free_task) {
+      ngts[, c("Name", "Answer", "Time"), drop = FALSE]
+    } else {
+      ngts[, c("Name", "Correct", "Time", "Distance travelled", "Error to target"), drop = FALSE]
+    }
+    
+    output$cmp_table1 <- renderTable(ngts_display)
     output$cmp_table2 <- renderTable(cores)
     
     # Legends
@@ -4018,24 +4048,49 @@ server <- function(input, output, session) {
     output$save_table1 <- downloadHandler(
       filename = function() {
         game_name_safe <- sanitize_filename(get_selected_game_name())
-        paste0("Compare_", game_name_safe, "_", selected_task_file_part, "_route_length_vs_time_", Sys.Date(), ".csv")
+        
+        file_suffix <- if (is_free_task) {
+          "free_task_comparison"
+        } else {
+          "route_length_vs_time"
+        }
+        
+        paste0(
+          "Compare_",
+          game_name_safe,
+          "_",
+          selected_task_file_part,
+          "_",
+          file_suffix,
+          "_",
+          Sys.Date(),
+          ".csv"
+        )
       },
+      
       content = function(file) {
         game_name <- get_selected_game_name()
         
-        df_out <- ngts
-        
-        if (!is.null(df_out) && nrow(df_out) > 0) {
-          df_out <- data.frame(
-            Game = game_name,
-            Player = df_out$Name,
-            Correct = df_out$Correct,
-            Time = df_out$Time,
-            `Distance travelled` = df_out$`Distance travelled`,
-            `Error to target` = df_out$`Error to target`,
-            check.names = FALSE,
-            stringsAsFactors = FALSE
-          )
+        if (is_free_task) {
+          # Free task CSV should contain only these 3 columns
+          df_out <- ngts[, c("Name", "Answer", "Time"), drop = FALSE]
+          
+        } else {
+          # Normal route/navigation CSV keeps the existing format
+          df_out <- ngts
+          
+          if (!is.null(df_out) && nrow(df_out) > 0) {
+            df_out <- data.frame(
+              Game = game_name,
+              Player = df_out$Name,
+              Correct = df_out$Correct,
+              Time = df_out$Time,
+              `Distance travelled` = df_out$`Distance travelled`,
+              `Error to target` = df_out$`Error to target`,
+              check.names = FALSE,
+              stringsAsFactors = FALSE
+            )
+          }
         }
         
         write_csv_excel_utf8(df_out, file, na = "NA")
