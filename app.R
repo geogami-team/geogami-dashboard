@@ -3383,7 +3383,7 @@ server <- function(input, output, session) {
       ans_b <- get_answer_bearing(dir_ok_idx, evts)
       cor_b <- get_correct_bearing(dir_ok_idx, evts)
 
-      if (is.finite(lon0) && is.finite(lat0) && !is.na(ans_b)) {
+      if (is.finite(lon0) && is.finite(lat0) && is.finite(ans_b)) {
         A <- arrow_lines(lon0, lat0, ans_b, len_m = 18, head_m = 5, head_ang = 25)
 
         map_shown <- leaflet() %>%
@@ -3398,7 +3398,7 @@ server <- function(input, output, session) {
           setView(lng = lon0, lat = lat0, zoom = 19)
 
         # Correct direction arrow (GREEN) - optional
-        if (!is.na(cor_b)) {
+        if (is.finite(cor_b)) {
           C <- arrow_lines(lon0, lat0, cor_b, len_m = 18, head_m = 5, head_ang = 25)
           map_shown <- map_shown %>%
                 addPolylines(lng = C$main$lng,  lat = C$main$lat,  color = "green", weight = 4, opacity = 0.9) %>%
@@ -3658,7 +3658,7 @@ server <- function(input, output, session) {
           ans_b <- get_answer_bearing(dir_ok_idx, evts)   # player's FINAL answer
           cor_b <- get_correct_bearing(dir_ok_idx, evts)  # correct direction
           
-          if (is.finite(lon0) && is.finite(lat0) && !is.na(ans_b)) {
+          if (is.finite(lon0) && is.finite(lat0) && is.finite(ans_b)) {
             
             # Make arrow smaller if you want
             A <- arrow_lines(lon0, lat0, ans_b, len_m = 18, head_m = 5, head_ang = 25)
@@ -3672,14 +3672,14 @@ server <- function(input, output, session) {
               addPolylines(lng = A$right$lng, lat = A$right$lat, color = "blue",  weight = 4, opacity = 1)
             
             # Correct direction arrow (GREEN) - optional
-            # if (!is.na(cor_b)) {
-            #   C <- arrow_lines(lon0, lat0, cor_b, len_m = 18, head_m = 5, head_ang = 25)
-            #   
-            #   map_shown <- map_shown %>%
-            #     addPolylines(lng = C$main$lng,  lat = C$main$lat,  color = "green", weight = 4, opacity = 0.9) %>%
-            #     addPolylines(lng = C$left$lng,  lat = C$left$lat,  color = "green", weight = 4, opacity = 0.9) %>%
-            #     addPolylines(lng = C$right$lng, lat = C$right$lat, color = "green", weight = 4, opacity = 0.9)
-            # }
+            if (is.finite(cor_b)) {
+              C <- arrow_lines(lon0, lat0, cor_b, len_m = 18, head_m = 5, head_ang = 25)
+
+              map_shown <- map_shown %>%
+                addPolylines(lng = C$main$lng,  lat = C$main$lat,  color = "green", weight = 4, opacity = 0.9) %>%
+                addPolylines(lng = C$left$lng,  lat = C$left$lat,  color = "green", weight = 4, opacity = 0.9) %>%
+                addPolylines(lng = C$right$lng, lat = C$right$lat, color = "green", weight = 4, opacity = 0.9)
+            }
             
             mr <- FALSE
           }
@@ -5015,7 +5015,7 @@ server <- function(input, output, session) {
       ans_b <- get_answer_bearing(dir_ok_idx, evts)
       cor_b <- get_correct_bearing(dir_ok_idx, evts)
       
-      if (is.finite(lon0) && is.finite(lat0) && !is.na(ans_b)) {
+      if (is.finite(lon0) && is.finite(lat0) && is.finite(ans_b)) {
         A <- arrow_lines(lon0, lat0, ans_b, len_m = 18, head_m = 5, head_ang = 25)
         
         map_shown <- leaflet() %>%
@@ -5030,7 +5030,7 @@ server <- function(input, output, session) {
           setView(lng = lon0, lat = lat0, zoom = 19)
         
         # Correct direction arrow (GREEN) - optional
-        if (!is.na(cor_b)) {
+        if (is.finite(cor_b)) {
           C <- arrow_lines(lon0, lat0, cor_b, len_m = 18, head_m = 5, head_ang = 25)
           map_shown <- map_shown %>%
             addPolylines(lng = C$main$lng,  lat = C$main$lat,  color = "green", weight = 4, opacity = 0.9) %>%
@@ -5291,7 +5291,7 @@ server <- function(input, output, session) {
           ans_b <- get_answer_bearing(dir_ok_idx, evts)   # player's FINAL answer
           cor_b <- get_correct_bearing(dir_ok_idx, evts)  # correct direction
           
-          if (is.finite(lon0) && is.finite(lat0) && !is.na(ans_b)) {
+          if (is.finite(lon0) && is.finite(lat0) && is.finite(ans_b)) {
             
             # Make arrow smaller if you want
             A <- arrow_lines(lon0, lat0, ans_b, len_m = 18, head_m = 5, head_ang = 25)
@@ -5305,14 +5305,14 @@ server <- function(input, output, session) {
               addPolylines(lng = A$right$lng, lat = A$right$lat, color = "blue",  weight = 4, opacity = 1)
             
             # Correct direction arrow (GREEN) - optional
-            # if (!is.na(cor_b)) {
-            #   C <- arrow_lines(lon0, lat0, cor_b, len_m = 18, head_m = 5, head_ang = 25)
-            #   
-            #   map_shown <- map_shown %>%
-            #     addPolylines(lng = C$main$lng,  lat = C$main$lat,  color = "green", weight = 4, opacity = 0.9) %>%
-            #     addPolylines(lng = C$left$lng,  lat = C$left$lat,  color = "green", weight = 4, opacity = 0.9) %>%
-            #     addPolylines(lng = C$right$lng, lat = C$right$lat, color = "green", weight = 4, opacity = 0.9)
-            # }
+            if (is.finite(cor_b)) {
+              C <- arrow_lines(lon0, lat0, cor_b, len_m = 18, head_m = 5, head_ang = 25)
+
+              map_shown <- map_shown %>%
+                addPolylines(lng = C$main$lng,  lat = C$main$lat,  color = "green", weight = 4, opacity = 0.9) %>%
+                addPolylines(lng = C$left$lng,  lat = C$left$lat,  color = "green", weight = 4, opacity = 0.9) %>%
+                addPolylines(lng = C$right$lng, lat = C$right$lat, color = "green", weight = 4, opacity = 0.9)
+            }
             
             mr <- FALSE
           }
