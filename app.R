@@ -257,6 +257,25 @@ ui <- page_sidebar(
   color: #000 !important;                /* ensure text stays readable */
     
 
+/* Keep long information assignment text to max 2 visible lines */
+.assignment-two-lines {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: normal !important;
+  line-height: 1.25em;
+  max-height: 2.5em;
+  cursor: help;
+}
+
+/* Better vertical alignment for multi-line table cells */
+#iris_data table.dataTable tbody td {
+  vertical-align: top;
+}
+
+
   "))
   ),
   
@@ -1664,6 +1683,64 @@ server <- function(input, output, session) {
   #######HELPER FUNCTION FOR CLEANLY EXPORTING AND DOWNLOADING THE CSV (USED FOR THE FUNCTION BELOW THAT IS 'BUILD_BIG_TABLE_EXPORT') - END ######
   
   
+  ###########STARTS - HELPER FUNCTION FOR MAKING INFORMATION TEXT SHORTER THAT IS UPTO 2 LINES ONLY ON THE ALL TASKS MAIN TAB###########
+  INFO_ASSIGNMENT_MAX_CHARS <- 150
+  
+  two_line_visible_text <- function(x, max_chars = INFO_ASSIGNMENT_MAX_CHARS) {
+    x <- clean_export_text(x)
+    
+    too_long <- !is.na(x) & nchar(x, type = "chars") > max_chars
+    x[too_long] <- paste0(substr(x[too_long], 1, max_chars - 3), "...")
+    
+    x
+  }
+  
+  assignment_two_line_html <- function(x, max_chars = INFO_ASSIGNMENT_MAX_CHARS) {
+    full_text <- clean_export_text(x)
+    visible_text <- two_line_visible_text(full_text, max_chars)
+    
+    mapply(function(full, visible) {
+      if (is.na(full)) return(NA_character_)
+      
+      paste0(
+        '<span class="assignment-two-lines" title="',
+        htmltools::htmlEscape(full),
+        '">',
+        htmltools::htmlEscape(visible),
+        '</span>'
+      )
+    }, full_text, visible_text, USE.NAMES = FALSE)
+  }
+  
+  html_visible_text <- function(x) {
+    x <- as.character(x)
+    x <- gsub("<[^>]+>", "", x)
+    x <- gsub("&nbsp;", " ", x, fixed = TRUE)
+    x <- gsub("&amp;", "&", x, fixed = TRUE)
+    x <- gsub("&lt;", "<", x, fixed = TRUE)
+    x <- gsub("&gt;", ">", x, fixed = TRUE)
+    x <- gsub("&quot;", "\"", x, fixed = TRUE)
+    x <- gsub("&#39;", "'", x, fixed = TRUE)
+    clean_export_text(x)
+  }
+  
+  apply_info_assignment_limit <- function(df, html = FALSE) {
+    if (is.null(df) || nrow(df) == 0) return(df)
+    if (!("Type" %in% names(df)) || !("Assignment" %in% names(df))) return(df)
+    
+    info_mask <- tolower(trimws(df$Type)) == "information"
+    
+    if (html) {
+      df$Assignment[info_mask] <- assignment_two_line_html(df$Assignment[info_mask])
+    } else {
+      df$Assignment[info_mask] <- two_line_visible_text(df$Assignment[info_mask])
+    }
+    
+    df
+  }
+  
+  ###########ENDS - HELPER FUNCTION FOR MAKING INFORMATION TEXT SHORTER THAT IS UPTO 2 LINES ONLY ON THE ALL TASKS MAIN TAB###########
+  
   
   ######## MAKING HELPER FUNCTION FOR ADDING THE NEW DOWNLOAD BUTTON IN BIG TABLE 'SAVE ALL TO CSV' START #############
   pretty_task_type <- function(x) {
@@ -1718,6 +1795,9 @@ server <- function(input, output, session) {
     df[["Pointing direction"]][info_mask] <- NA_character_
     df[["Rotation angle"]][info_mask] <- NA_character_
     df[["Error in °/m"]][info_mask] <- NA_character_
+    
+    # For Save All Players CSV: save only the visible shortened information text
+    df <- apply_info_assignment_limit(df, html = FALSE)
     
     df
   }
@@ -2720,6 +2800,8 @@ server <- function(input, output, session) {
     df[["Pointing direction"]][info_mask] <- NA_character_
     df[["Rotation angle"]][info_mask] <- NA_character_
     df[["Error in °/m"]][info_mask] <- NA_character_
+    # For dashboard display: show max 2-line information text, full text on hover
+    df <- apply_info_assignment_limit(df, html = TRUE)
     
     
     
@@ -2844,8 +2926,14 @@ server <- function(input, output, session) {
     
     # Show table
     output$iris_data <- renderDT({
-      filtered_df()
-    }, options = list(pageLength = 10))
+      df_show <- filtered_df()
+      
+      DT::datatable(
+        df_show,
+        escape = setdiff(names(df_show), "Assignment"),
+        options = list(pageLength = 10)
+      )
+    })
     
     #---------logic for select/deselect all starts ----------------------
     observeEvent(input$select_all_tasks, {
@@ -2884,7 +2972,7 @@ server <- function(input, output, session) {
         
         if (!is.null(df_out) && nrow(df_out) > 0) {
           if ("Assignment" %in% names(df_out)) {
-            df_out$Assignment <- clean_export_text(df_out$Assignment)
+            df_out$Assignment <- html_visible_text(df_out$Assignment)
           }
           if ("Answer" %in% names(df_out)) {
             df_out$Answer <- clean_export_text(df_out$Answer)
@@ -4397,6 +4485,8 @@ server <- function(input, output, session) {
     df[["Rotation angle"]][info_mask] <- NA_character_
     df[["Error in °/m"]][info_mask] <- NA_character_
     
+    # For dashboard display: show max 2-line information text, full text on hover
+    df <- apply_info_assignment_limit(df, html = TRUE)
     
     
     
@@ -4516,8 +4606,14 @@ server <- function(input, output, session) {
     
     # Show table
     output$iris_data <- renderDT({
-      filtered_df()
-    }, options = list(pageLength = 10))
+      df_show <- filtered_df()
+      
+      DT::datatable(
+        df_show,
+        escape = setdiff(names(df_show), "Assignment"),
+        options = list(pageLength = 10)
+      )
+    })
     
     #---------logic for select/deselect all starts ----------------------
     observeEvent(input$select_all_tasks, {
@@ -4554,7 +4650,7 @@ server <- function(input, output, session) {
         
         if (!is.null(df_out) && nrow(df_out) > 0) {
           if ("Assignment" %in% names(df_out)) {
-            df_out$Assignment <- clean_export_text(df_out$Assignment)
+            df_out$Assignment <- html_visible_text(df_out$Assignment)
           }
           if ("Answer" %in% names(df_out)) {
             df_out$Answer <- clean_export_text(df_out$Answer)
