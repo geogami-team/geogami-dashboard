@@ -255,7 +255,7 @@ ui <- page_sidebar(
 .bootstrap-select .dropdown-menu li:hover a {
   background-color: #27e7f5 !important; /* light teal-blue background */
   color: #000 !important;                /* ensure text stays readable */
-    
+}
 
 /* Keep long information assignment text to max 2 visible lines */
 .assignment-two-lines {
@@ -376,7 +376,24 @@ ui <- page_sidebar(
             uiOutput("file_selector_ui"))
       ),
       
-      uiOutput("player_info_box"),
+      div(
+        style = "display: flex; justify-content: space-between; align-items: flex-end; gap: 20px; margin-bottom: 10px;",
+        
+        uiOutput("player_info_box"),
+        
+        div(
+          style = "min-width: 280px; text-align: right;",
+          switchInput(
+            inputId = "advanced_direction_analysis_all",
+            label = "Advanced Direction Task Analysis",
+            value = FALSE,
+            onLabel = "On",
+            offLabel = "Off",
+            size = "small"
+          )
+        )
+      ),
+      
       DTOutput('iris_data'),
       div(
         style = "border: 0px solid #ccc; padding: 10px; margin-top: 15px; border-radius: 8px;",
@@ -450,7 +467,29 @@ ui <- page_sidebar(
       ),
       conditionalPanel(
         condition = "output.tabLegend == 'Task type: Direction determination'",
-        card(h4("Direction Task Comparison"), tableOutput('cmp_table2'), downloadButton('save_table2', 'Save to csv'), style = "margin-top: 10px")
+        card(
+          div(
+            style = "display: flex; justify-content: space-between; align-items: center; gap: 20px; margin-bottom: 10px;",
+            
+            h4("Direction Task Comparison", style = "margin: 0;"),
+            
+            div(
+              style = "min-width: 280px; text-align: right;",
+              switchInput(
+                inputId = "advanced_direction_analysis_compare",
+                label = "Advanced Direction Task Analysis",
+                value = FALSE,
+                onLabel = "On",
+                offLabel = "Off",
+                size = "small"
+              )
+            )
+          ),
+          
+          tableOutput('cmp_table2'),
+          downloadButton('save_table2', 'Save to csv'),
+          style = "margin-top: 10px"
+        )
       )
     ),
     tabPanel(
@@ -1949,6 +1988,27 @@ server <- function(input, output, session) {
   ####### ends  - MAKING HELPER FUNCTION TO CORRECT THE COMPARE PLAYERS TAB - CSV FILE DOWNLOAD#########
   
   
+  ######Starts - Helper function for advanced direction analysis toggle buttons#####
+  # ---- Advanced Direction Task Analysis toggle helpers ----
+  advanced_direction_cols <- c(
+    "Viewing direction",
+    "Final viewing direction",
+    "Pointing direction",
+    "Rotation angle",
+    "Final Answer"
+  )
+  
+  drop_advanced_direction_cols <- function(df) {
+    if (is.null(df) || nrow(df) == 0) return(df)
+    df[, setdiff(names(df), advanced_direction_cols), drop = FALSE]
+  }
+  
+  advanced_direction_enabled <- reactive({
+    isTRUE(input$advanced_direction_analysis_all) ||
+      isTRUE(input$advanced_direction_analysis_compare)
+  })
+  ######ENDS - Helper function for advanced direction task toggle buttons#####
+  
   
   
   
@@ -3005,6 +3065,10 @@ server <- function(input, output, session) {
     output$iris_data <- renderDT({
       df_show <- filtered_df()
       
+      if (!advanced_direction_enabled()) {
+        df_show <- drop_advanced_direction_cols(df_show)
+      }
+      
       DT::datatable(
         df_show,
         escape = setdiff(names(df_show), "Assignment"),
@@ -3046,6 +3110,10 @@ server <- function(input, output, session) {
       
       content = function(file) {
         df_out <- filtered_df()
+        
+        if (!advanced_direction_enabled()) {
+          df_out <- drop_advanced_direction_cols(df_out)
+        }
         
         if (!is.null(df_out) && nrow(df_out) > 0) {
           if ("Assignment" %in% names(df_out)) {
@@ -3149,6 +3217,10 @@ server <- function(input, output, session) {
           
           df_one <- apply_task_id_filter_export(df_one, selected_task_ids_now)
           if (nrow(df_one) == 0) next
+          
+          if (!advanced_direction_enabled()) {
+            df_one <- drop_advanced_direction_cols(df_one)
+          }
           
           player_name <- if (!is.null(tr$players) && length(tr$players) > 0) {
             as.character(tr$players[1])
@@ -4005,7 +4077,15 @@ server <- function(input, output, session) {
     }
     
     output$cmp_table1 <- renderTable(ngts_display)
-    output$cmp_table2 <- renderTable(cores)
+    output$cmp_table2 <- renderTable({
+      df_show <- cores
+      
+      if (!advanced_direction_enabled()) {
+        df_show <- drop_advanced_direction_cols(df_show)
+      }
+      
+      df_show
+    })
     
     # Legends
     t <- ref_task_type
@@ -4192,18 +4272,15 @@ server <- function(input, output, session) {
         
         df_out <- cores
         
+        if (!advanced_direction_enabled()) {
+          df_out <- drop_advanced_direction_cols(df_out)
+        }
+        
         if (!is.null(df_out) && nrow(df_out) > 0) {
           df_out <- data.frame(
             Game = game_name,
             Player = df_out$Name,
-            Correct = df_out$Correct,
-            Time = df_out$Time,
-            `Viewing direction` = df_out[["Viewing direction"]],
-            `Final viewing direction` = df_out[["Final viewing direction"]],
-            `Pointing direction` = df_out[["Pointing direction"]],
-            `Rotation angle` = df_out[["Rotation angle"]],
-            `Final Answer` = df_out[["Final Answer"]],
-            Error = df_out$Error,
+            df_out[, setdiff(names(df_out), "Name"), drop = FALSE],
             check.names = FALSE,
             stringsAsFactors = FALSE
           )
@@ -4751,6 +4828,10 @@ server <- function(input, output, session) {
     output$iris_data <- renderDT({
       df_show <- filtered_df()
       
+      if (!advanced_direction_enabled()) {
+        df_show <- drop_advanced_direction_cols(df_show)
+      }
+      
       DT::datatable(
         df_show,
         escape = setdiff(names(df_show), "Assignment"),
@@ -4790,6 +4871,10 @@ server <- function(input, output, session) {
       
       content = function(file) {
         df_out <- filtered_df()
+        
+        if (!advanced_direction_enabled()) {
+          df_out <- drop_advanced_direction_cols(df_out)
+        }
         
         if (!is.null(df_out) && nrow(df_out) > 0) {
           if ("Assignment" %in% names(df_out)) {
@@ -5468,9 +5553,15 @@ server <- function(input, output, session) {
     )
     
     #CORRECT & ERRORS Table
-    output$cmp_table2 <- renderTable(
-      cores
-    )
+    output$cmp_table2 <- renderTable({
+      df_show <- cores
+      
+      if (!advanced_direction_enabled()) {
+        df_show <- drop_advanced_direction_cols(df_show)
+      }
+      
+      df_show
+    })
     
     output$tabLegend <- renderText({paste("Task type:",t)})
     output$graphLegend <- renderText({paste("Task type:",t)})
@@ -5512,6 +5603,39 @@ server <- function(input, output, session) {
   num_value_num <- reactive({
     suppressWarnings(as.integer(input$num_value))
   })
+  
+  #### STARTS - toggle buttons sync lock####
+  
+  # Sync the two Advanced Direction Task Analysis toggles
+  adv_dir_lock <- FALSE
+  
+  observeEvent(input$advanced_direction_analysis_all, {
+    if (adv_dir_lock) return()
+    
+    adv_dir_lock <<- TRUE
+    updateSwitchInput(
+      session,
+      inputId = "advanced_direction_analysis_compare",
+      value = isTRUE(input$advanced_direction_analysis_all)
+    )
+    adv_dir_lock <<- FALSE
+  }, ignoreInit = TRUE)
+  
+  observeEvent(input$advanced_direction_analysis_compare, {
+    if (adv_dir_lock) return()
+    
+    adv_dir_lock <<- TRUE
+    updateSwitchInput(
+      session,
+      inputId = "advanced_direction_analysis_all",
+      value = isTRUE(input$advanced_direction_analysis_compare)
+    )
+    adv_dir_lock <<- FALSE
+  }, ignoreInit = TRUE)
+  
+  #### ENDS - toggle buttons sync lock####
+  
+  
   
   # Preventing recursive updates
   sync_lock <- FALSE
