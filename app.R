@@ -1811,7 +1811,37 @@ server <- function(input, output, session) {
       t_end   <- parse_ts(evts$timestamp[final_idx])
       time_s  <- if (is.na(t_start) || is.na(t_end)) NA_integer_ else as.integer(floor(difftime(t_end, t_start, units="secs")))
       
-      tries <- sum(evts$type[block] == "ON_OK_CLICKED", na.rm = TRUE)
+      # tries / attempts
+      # Some real-world navigation tasks do not create ON_OK_CLICKED.
+      # They finish automatically with WAYPOINT_REACHED.
+      ok_count <- sum(evts$type[block] == "ON_OK_CLICKED", na.rm = TRUE)
+      waypoint_count <- sum(evts$type[block] == "WAYPOINT_REACHED", na.rm = TRUE)
+      map_click_count <- sum(evts$type[block] == "ON_MAP_CLICKED", na.rm = TRUE)
+      choice_count <- sum(evts$type[block] == "MULTIPLE_CHOICE_SELECTED", na.rm = TRUE)
+      
+      is_info_task <- !is.na(task_cat) && task_cat == "info"
+      is_nav_task  <- !is.na(task_cat) && task_cat == "nav"
+      is_theme_task <- !is.na(task_cat) && task_cat == "theme"
+      
+      tries <- ok_count
+      
+      # Information tasks should stay 0, even if they have an OK click.
+      if (is_info_task) {
+        tries <- 0L
+        
+        # Real-world nav-photo / nav-arrow / nav-text often complete by WAYPOINT_REACHED.
+      } else if (tries == 0L && is_nav_task && waypoint_count > 0L) {
+        tries <- waypoint_count
+        
+        # Extra fallback: if it is a navigation task with time spent but no OK event,
+        # count it as one played attempt.
+      } else if (tries == 0L && is_nav_task && !is.na(time_s) && time_s > 0L) {
+        tries <- 1L
+        
+        # Extra safety for theme/free tasks if a player interacted but no OK was stored.
+      } else if (tries == 0L && is_theme_task && (map_click_count > 0L || choice_count > 0L)) {
+        tries <- 1L
+      }
       
       # correctness (prefer answer$correct, fallback to correct)
       cr <- try(evts$answer$correct[final_idx], silent = TRUE)
