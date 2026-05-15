@@ -432,7 +432,15 @@ ui <- page_sidebar(
       ),
       textOutput("tabLegend"),
       conditionalPanel(
-        condition = "output.tabLegend == 'Task type: Navigation to flag' || output.tabLegend == 'Task type: Navigation with arrow' || output.tabLegend == 'Task type: Navigation via text' || output.tabLegend == 'Task type: Navigation via photo' || output.tabLegend == 'Task type: Free'",
+        condition = "
+          output.tabLegend == 'Task type: Navigation to flag' ||
+          output.tabLegend == 'Task type: Navigation with arrow' ||
+          output.tabLegend == 'Task type: Navigation via text' ||
+          output.tabLegend == 'Task type: Navigation via photo' ||
+          output.tabLegend == 'Task type: Self location' ||
+          output.tabLegend == 'Task type: Object location' ||
+          output.tabLegend == 'Task type: Free'
+        ",
         card(
           h4(textOutput("cmp_table1_title", inline = TRUE)),
           tableOutput('cmp_table1'),
@@ -3948,6 +3956,8 @@ server <- function(input, output, session) {
     output$cmp_table1_title <- renderText({
       if (!is.na(ref_task_type) && ref_task_type == "free") {
         "Free task comparison"
+      } else if (!is.na(ref_task_type) && ref_task_type %in% c("theme-loc", "theme-object")) {
+        "Location task comparison"
       } else {
         "Route length versus time"
       }
@@ -4051,6 +4061,8 @@ server <- function(input, output, session) {
         
         file_suffix <- if (is_free_task) {
           "free_task_comparison"
+        } else if (!is.na(ref_task_type) && ref_task_type %in% c("theme-loc", "theme-object")) {
+          "location_task_comparison"
         } else {
           "route_length_vs_time"
         }
