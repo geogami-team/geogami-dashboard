@@ -2939,7 +2939,7 @@ server <- function(input, output, session) {
       DT::datatable(
         df_show,
         escape = setdiff(names(df_show), "Assignment"),
-        options = list(pageLength = 10)
+        options = list(pageLength = 10, ordering = FALSE)
       )
     })
     
@@ -4678,7 +4678,7 @@ server <- function(input, output, session) {
       DT::datatable(
         df_show,
         escape = setdiff(names(df_show), "Assignment"),
-        options = list(pageLength = 10)
+        options = list(pageLength = 10, ordering = FALSE)
       )
     })
     
