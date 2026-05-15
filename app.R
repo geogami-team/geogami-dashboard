@@ -1698,7 +1698,7 @@ server <- function(input, output, session) {
       Type = vapply(sm$task_type, pretty_task_type, character(1)),
       Assignment = clean_export_text(sm$assignment),
       Answer = clean_export_text(sm$answer_txt),
-      Time = ifelse(is.na(sm$time_s), NA_character_, paste0(sm$time_s, " s")),
+      `Time(s)` = ifelse(is.na(sm$time_s), NA_character_, paste0(sm$time_s, " s")),
       Tries = sm$tries,
       `Viewing direction` = format_bearing_deg(sm$viewing_direction),
       `Final viewing direction` = format_bearing_deg(sm$final_viewing_direction),
@@ -2701,7 +2701,7 @@ server <- function(input, output, session) {
       Type = vapply(sm$task_type, pretty_task_type, character(1)),
       Assignment = sm$assignment,
       Answer = sm$answer_txt,
-      Time = ifelse(is.na(sm$time_s), NA_character_, paste0(sm$time_s, " s")),
+      `Time(s)` = ifelse(is.na(sm$time_s), NA_character_, paste0(sm$time_s, " s")),
       Tries = sm$tries,
       `Viewing direction` = format_bearing_deg(sm$viewing_direction),
       `Final viewing direction` = format_bearing_deg(sm$final_viewing_direction),
@@ -3020,9 +3020,9 @@ server <- function(input, output, session) {
         close(con)
         
         for (i in seq_along(player_blocks)) {
-          # Add exactly 2 blank lines BETWEEN players
+          # Add exactly 1 blank line BETWEEN players
           if (i > 1) {
-            cat("\r\n\r\n", file = file, append = TRUE)
+            cat("\r\n", file = file, append = TRUE)
           }
           
           utils::write.table(
@@ -4377,7 +4377,7 @@ server <- function(input, output, session) {
       Type = vapply(sm$task_type, pretty_task_type, character(1)),
       Assignment = sm$assignment,
       Answer = sm$answer_txt,
-      Time = ifelse(is.na(sm$time_s), NA_character_, paste0(sm$time_s, " s")),
+      `Time(s)` = ifelse(is.na(sm$time_s), NA_character_, paste0(sm$time_s, " s")),
       Tries = sm$tries,
       `Viewing direction` = format_bearing_deg(sm$viewing_direction),
       `Final viewing direction` = format_bearing_deg(sm$final_viewing_direction),
