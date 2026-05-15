@@ -346,19 +346,19 @@ ui <- page_sidebar(
       var color = traj.color || "#d62728";
 
       L.circleMarker(pts[0], {
+        radius: 3,
+        color: color,
+        fillColor: color,
+        fillOpacity: 1,
+        weight: 1
+      }).addTo(group);
+
+      var movingMarker = L.circleMarker(pts[0], {
         radius: 4,
         color: color,
         fillColor: color,
         fillOpacity: 1,
-        weight: 2
-      }).addTo(group);
-
-      var movingMarker = L.circleMarker(pts[0], {
-        radius: 6,
-        color: color,
-        fillColor: color,
-        fillOpacity: 1,
-        weight: 2
+        weight: 1
       }).addTo(group);
 
       var line = L.polyline([pts[0]], {
@@ -6300,7 +6300,7 @@ server <- function(input, output, session) {
           trajectories = trajectory_payload,
           duration = 6500,
           steps = 170,
-          lineWeight = 4
+          lineWeight = MAP_TRAJ_WEIGHT
         )
       )
     }, once = TRUE)
