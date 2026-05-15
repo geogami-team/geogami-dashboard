@@ -276,7 +276,187 @@ ui <- page_sidebar(
 }
 
 
-  "))
+  "),
+               
+               
+               ),
+    
+    
+    tags$script(HTML('
+(function registerGeoGamiTrajectoryAnimation() {
+  if (typeof Shiny === "undefined" || typeof HTMLWidgets === "undefined" || typeof L === "undefined") {
+    setTimeout(registerGeoGamiTrajectoryAnimation, 100);
+    return;
+  }
+
+  window.geogamiTrajectoryAnimations = window.geogamiTrajectoryAnimations || {};
+
+  function esc(value) {
+    return String(value == null ? "" : value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  Shiny.addCustomMessageHandler("animateTrajectories", function(message) {
+    var mapId = message.mapId || "map";
+    var widget = HTMLWidgets.find("#" + mapId);
+
+    if (!widget || typeof widget.getMap !== "function") {
+      console.warn("Leaflet map not found for animation:", mapId);
+      return;
+    }
+
+    var map = widget.getMap();
+
+    var old = window.geogamiTrajectoryAnimations[mapId];
+    if (old) {
+      if (old.timer) clearInterval(old.timer);
+      if (old.group) map.removeLayer(old.group);
+      if (old.legend) map.removeControl(old.legend);
+    }
+
+    var group = L.layerGroup().addTo(map);
+    var trajectories = message.trajectories || [];
+    var duration = Number(message.duration || 6000);
+    var steps = Number(message.steps || 160);
+    var lineWeight = Number(message.lineWeight || 4);
+
+    var animated = [];
+    var allPoints = [];
+
+    trajectories.forEach(function(traj) {
+      var pts = [];
+      var lat = traj.lat || [];
+      var lng = traj.lng || [];
+      var n = Math.min(lat.length, lng.length);
+
+      for (var i = 0; i < n; i++) {
+        var la = Number(lat[i]);
+        var ln = Number(lng[i]);
+        if (isFinite(la) && isFinite(ln)) {
+          pts.push([la, ln]);
+          allPoints.push([la, ln]);
+        }
+      }
+
+      if (pts.length < 2) return;
+
+      var color = traj.color || "#d62728";
+
+      L.circleMarker(pts[0], {
+        radius: 4,
+        color: color,
+        fillColor: color,
+        fillOpacity: 1,
+        weight: 2
+      }).addTo(group);
+
+      var movingMarker = L.circleMarker(pts[0], {
+        radius: 6,
+        color: color,
+        fillColor: color,
+        fillOpacity: 1,
+        weight: 2
+      }).addTo(group);
+
+      var line = L.polyline([pts[0]], {
+        color: color,
+        weight: lineWeight,
+        opacity: 1
+      }).addTo(group);
+
+      animated.push({
+        pts: pts,
+        line: line,
+        movingMarker: movingMarker,
+        color: color,
+        label: traj.label || ""
+      });
+    });
+
+        if (animated.length === 0) return;
+
+    // Animation legend: visible only on the map during animation.
+    // This is not connected to any CSV download.
+    var legend = L.control({ position: "topright" });
+
+    legend.onAdd = function() {
+      var div = L.DomUtil.create("div", "geogami-trajectory-animation-legend");
+
+      var html = `
+        <div style="
+          background: white;
+          padding: 8px 10px;
+          border-radius: 6px;
+          box-shadow: 0 1px 5px rgba(0,0,0,0.35);
+          font-size: 13px;
+          line-height: 1.3;
+          max-width: 260px;
+        ">
+          <div style="font-weight: bold; margin-bottom: 5px;">
+            Animated trajectories
+          </div>
+      `;
+
+      animated.forEach(function(a) {
+        html += `
+          <div style="display: flex; align-items: center; gap: 6px; margin: 2px 0;">
+            <span style="
+              display: inline-block;
+              width: 14px;
+              height: 14px;
+              background: ${a.color};
+              border: 1px solid #333;
+            "></span>
+            <span>${esc(a.label)}</span>
+          </div>
+        `;
+      });
+
+      html += `</div>`;
+      div.innerHTML = html;
+
+      L.DomEvent.disableClickPropagation(div);
+      L.DomEvent.disableScrollPropagation(div);
+
+      return div;
+    };
+
+    legend.addTo(map);
+
+    if (allPoints.length > 1) {
+      map.fitBounds(L.latLngBounds(allPoints), { padding: [30, 30] });
+    }
+
+    var currentStep = 1;
+    var intervalMs = Math.max(15, duration / steps);
+
+    var timer = setInterval(function() {
+      currentStep++;
+      var fraction = Math.min(1, currentStep / steps);
+
+      animated.forEach(function(a) {
+        var count = Math.max(1, Math.ceil(fraction * a.pts.length));
+        var shown = a.pts.slice(0, count);
+        a.line.setLatLngs(shown);
+        a.movingMarker.setLatLng(shown[shown.length - 1]);
+      });
+
+      if (fraction >= 1) {
+        clearInterval(timer);
+      }
+    }, intervalMs);
+
+        window.geogamiTrajectoryAnimations[mapId] = {
+      group: group,
+      legend: legend,
+      timer: timer
+    };
+  });
+})();
+'))
   ),
   
   theme = bs_theme(),  # initially empty theme
@@ -408,7 +588,7 @@ ui <- page_sidebar(
              margin-top: 20px; margin-bottom: 15px;
              border: 1px solid #ccc; padding: 10px;",
         div(style = "min-width: 300px;", pickerInput("num_value", "Selected Tasks:", choices = 1, selected = 1, multiple = FALSE)),
-        div(style = "min-width: 300px;", uiOutput("file_selector_ui3"))
+        div(style = "flex: 1; min-width: 900px;", uiOutput("file_selector_ui3"))
       ),
       textOutput("mapLegend"),
       div(id = "map_container", leafletOutput("map"), style = "margin-top: 5px"),
@@ -2052,6 +2232,10 @@ server <- function(input, output, session) {
   
   MAP_TRAJ_GROUP <- "multi_player_trajectories"
   
+  # Default red trajectory drawn by the base map for the reference player.
+  # We put it in its own group so we can hide it before animation starts.
+  REFERENCE_BASE_TRAJ_GROUP <- "reference_base_trajectory"
+  
   # Keep overlay trajectories visually consistent with the original red reference trajectory
   MAP_TRAJ_WEIGHT <- 2
   MAP_TRAJ_OPACITY <- 1
@@ -2654,7 +2838,7 @@ server <- function(input, output, session) {
     
     choices_now <- filtered_choices_r()
     
-    # Reference player: this keeps your existing map logic working.
+    # Reference player
     cur_ref <- isolate(input$selected_data_file)
     selected_ref <- if (
       !is.null(cur_ref) &&
@@ -2666,48 +2850,64 @@ server <- function(input, output, session) {
       choices_now[1]
     }
     
-    # Multi-player trajectory selector for the Map tab.
+    # Multi-player trajectory selector
     cur_map <- isolate(input$selected_map_files)
     selected_map <- intersect(cur_map, choices_now)
     
-    # By default, only show the reference player's trajectory.
-    # The user can use Select All inside the picker.
     if (length(selected_map) == 0) {
       selected_map <- selected_ref
     }
     
-    tagList(
-      pickerInput(
-        "selected_data_file",
-        "Reference player / map details:",
-        choices = choices_now,
-        selected = selected_ref,
-        multiple = FALSE,
-        options = list(
-          `actions-box` = FALSE,
-          `live-search` = FALSE,
-          `none-selected-text` = "Select a player",
-          `width` = '100%',
-          container = FALSE,
-          size = 10
+    div(
+      style = "display: flex; gap: 18px; align-items: flex-end; flex-wrap: wrap;",
+      
+      div(
+        style = "width: 300px;",
+        pickerInput(
+          "selected_data_file",
+          "Reference player / map details:",
+          choices = choices_now,
+          selected = selected_ref,
+          multiple = FALSE,
+          options = list(
+            `actions-box` = FALSE,
+            `live-search` = FALSE,
+            `none-selected-text` = "Select a player",
+            `width` = '100%',
+            container = FALSE,
+            size = 10
+          )
         )
       ),
       
-      pickerInput(
-        "selected_map_files",
-        "Players shown as trajectories:",
-        choices = choices_now,
-        selected = selected_map,
-        multiple = TRUE,
-        options = list(
-          `actions-box` = TRUE,
-          `live-search` = FALSE,
-          `none-selected-text` = "Select players for trajectories",
-          `select-all-text` = "Select all",
-          `deselect-all-text` = "Deselect all",
-          `width` = '100%',
-          container = FALSE,
-          size = 10
+      div(
+        style = "width: 330px;",
+        pickerInput(
+          "selected_map_files",
+          "Players shown as trajectories:",
+          choices = choices_now,
+          selected = selected_map,
+          multiple = TRUE,
+          options = list(
+            `actions-box` = TRUE,
+            `live-search` = FALSE,
+            `none-selected-text` = "Select players for trajectories",
+            `select-all-text` = "Select all",
+            `deselect-all-text` = "Deselect all",
+            `width` = '100%',
+            container = FALSE,
+            size = 10
+          )
+        )
+      ),
+      
+      div(
+        style = "padding-bottom: 15px;",
+        actionButton(
+          "visualize_trajectories_btn",
+          "Visualize Trajectories",
+          icon = icon("play"),
+          style = "height: 38px; white-space: nowrap; background-color: #0CD1E8; border-color: #0CD1E8; color: #000;"
         )
       )
     )
@@ -3612,7 +3812,15 @@ server <- function(input, output, session) {
           addTiles() %>%
           addMarkers(lng = unlist(long)[1], lat = unlist(lati)[1], icon = loc_marker_green) %>%
           addCircles(lng = unlist(long)[1], lat = unlist(lati)[1], radius = accuracy_rad, opacity = 0.5) %>%
-          addPolylines(lng = unlist(traj_lng), lat = unlist(traj_lat), color = "red", weight = 2, opacity = 1, stroke = TRUE)
+          addPolylines(
+            lng = unlist(traj_lng),
+            lat = unlist(traj_lat),
+            color = "red",
+            weight = 2,
+            opacity = 1,
+            stroke = TRUE,
+            group = REFERENCE_BASE_TRAJ_GROUP
+          )
       }
     }
     if (length(dr_point_lng) != 0) {
@@ -3751,7 +3959,11 @@ server <- function(input, output, session) {
             addPolylines(
               lng = unlist(traj_lng),
               lat = unlist(traj_lat),
-              color = "red", weight = 2, opacity = 1, stroke = TRUE
+              color = "red",
+              weight = 2,
+              opacity = 1,
+              stroke = TRUE,
+              group = REFERENCE_BASE_TRAJ_GROUP
             )
         }
         
@@ -3759,9 +3971,13 @@ server <- function(input, output, session) {
           map_shown <- leaflet() %>%
             addTiles() %>%
             addPolylines(
-              lng = unlist(dr_point_lng),
-              lat = unlist(dr_point_lat),
-              color = "red", weight = 2, opacity = 1, stroke = TRUE
+              lng = unlist(traj_lng),
+              lat = unlist(traj_lat),
+              color = "red",
+              weight = 2,
+              opacity = 1,
+              stroke = TRUE,
+              group = REFERENCE_BASE_TRAJ_GROUP
             )
         }
         
@@ -5248,7 +5464,15 @@ server <- function(input, output, session) {
           addTiles() %>%
           addMarkers(lng = unlist(long)[1], lat = unlist(lati)[1], icon = loc_marker_green) %>%
           addCircles(lng = unlist(long)[1], lat = unlist(lati)[1], radius = accuracy_rad, opacity = 0.5) %>%
-          addPolylines(lng = unlist(traj_lng), lat = unlist(traj_lat), color = "red", weight = 2, opacity = 1, stroke = TRUE)
+          addPolylines(
+            lng = unlist(traj_lng),
+            lat = unlist(traj_lat),
+            color = "red",
+            weight = 2,
+            opacity = 1,
+            stroke = TRUE,
+            group = REFERENCE_BASE_TRAJ_GROUP
+          )
       }
     }
     if (length(dr_point_lng) != 0) {
@@ -5385,7 +5609,11 @@ server <- function(input, output, session) {
             addPolylines(
               lng = unlist(traj_lng),
               lat = unlist(traj_lat),
-              color = "red", weight = 2, opacity = 1, stroke = TRUE
+              color = "red",
+              weight = 2,
+              opacity = 1,
+              stroke = TRUE,
+              group = REFERENCE_BASE_TRAJ_GROUP
             )
         }
         
@@ -5393,9 +5621,13 @@ server <- function(input, output, session) {
           map_shown <- leaflet() %>%
             addTiles() %>%
             addPolylines(
-              lng = unlist(dr_point_lng),
-              lat = unlist(dr_point_lat),
-              color = "red", weight = 2, opacity = 1, stroke = TRUE
+              lng = unlist(traj_lng),
+              lat = unlist(traj_lat),
+              color = "red",
+              weight = 2,
+              opacity = 1,
+              stroke = TRUE,
+              group = REFERENCE_BASE_TRAJ_GROUP
             )
         }
         
@@ -5922,17 +6154,21 @@ server <- function(input, output, session) {
           # Do not draw it again, otherwise it becomes visually thicker.
           this_color <- if (is_reference_player) REFERENCE_TRAJ_COLOR else colors[i]
           
-          proxy <- proxy %>%
-            addPolylines(
-              lng = traj$lng,
-              lat = traj$lat,
-              color = this_color,
-              weight = MAP_TRAJ_WEIGHT,
-              opacity = MAP_TRAJ_OPACITY,
-              group = MAP_TRAJ_GROUP,
-              label = player_label,
-              popup = player_label
-            )
+          # The reference player's trajectory is already drawn in the base map.
+          # Do not draw it again, otherwise it can look thicker.
+          if (!is_reference_player) {
+            proxy <- proxy %>%
+              addPolylines(
+                lng = traj$lng,
+                lat = traj$lat,
+                color = this_color,
+                weight = MAP_TRAJ_WEIGHT,
+                opacity = MAP_TRAJ_OPACITY,
+                group = MAP_TRAJ_GROUP,
+                label = player_label,
+                popup = player_label
+              )
+          }
           
           # Still include the reference player in the legend and map bounds
           legend_labels <- c(legend_labels, player_label)
@@ -5982,16 +6218,97 @@ server <- function(input, output, session) {
   )
   
   
-  # Single download handler for maps (works for real + virtual env)
-  # output$downloadMap <- downloadHandler(
-  #   filename = function() {
-  #     paste0("map_", Sys.Date(), ".html")
-  #   },
-  #   content = function(file) {
-  #     req(map_rv())
-  #     htmlwidgets::saveWidget(map_rv(), file = file, selfcontained = TRUE)
-  #   }
-  # )
+  observeEvent(input$visualize_trajectories_btn, {
+    req(input$selected_map_files)
+    req(input$num_value)
+    req(map_rv())
+    req(apiURL_rv())
+    req(accessToken_rv())
+    
+    selected_ids <- input$selected_map_files
+    task_no <- suppressWarnings(as.integer(input$num_value))
+    
+    if (is.na(task_no) || task_no <= 0 || length(selected_ids) == 0) {
+      showNotification("Please select a valid task and at least one player.", type = "warning")
+      return()
+    }
+    
+    ref_id <- if (!is.null(input$selected_data_file) && length(input$selected_data_file) > 0) {
+      as.character(input$selected_data_file[1])
+    } else {
+      NA_character_
+    }
+    
+    api_url_now <- apiURL_rv()
+    token_now <- accessToken_rv()
+    choices_now <- choices_rv()
+    
+    colors <- rep(MAP_TRAJ_COLORS, length.out = length(selected_ids))
+    trajectory_payload <- list()
+    
+    for (i in seq_along(selected_ids)) {
+      track_id <- selected_ids[i]
+      
+      tr <- get_track_for_map(
+        track_id = track_id,
+        api_url = api_url_now,
+        token = token_now
+      )
+      
+      if (is.null(tr)) next
+      
+      traj <- get_task_trajectory_df(tr, task_no)
+      if (is.null(traj) || nrow(traj) < 2) next
+      
+      player_label <- get_map_track_label(
+        track_id = track_id,
+        tr = tr,
+        choices_now = choices_now
+      )
+      
+      is_reference_player <- !is.na(ref_id) && as.character(track_id) == ref_id
+      this_color <- if (is_reference_player) REFERENCE_TRAJ_COLOR else colors[i]
+      
+      trajectory_payload[[length(trajectory_payload) + 1]] <- list(
+        label = player_label,
+        color = this_color,
+        lat = unname(as.list(traj$lat)),
+        lng = unname(as.list(traj$lng))
+      )
+    }
+    
+    if (length(trajectory_payload) == 0) {
+      showNotification("No trajectory points found for the selected task.", type = "warning")
+      return()
+    }
+    
+    # Remove the static multi-player overlay first, so the animation is clearly visible.
+    leafletProxy(
+      mapId = "map",
+      session = session,
+      deferUntilFlush = FALSE
+    ) %>%
+      clearGroup(MAP_TRAJ_GROUP) %>%
+      clearGroup(REFERENCE_BASE_TRAJ_GROUP) %>%
+      clearControls()
+    
+    session$onFlushed(function() {
+      session$sendCustomMessage(
+        "animateTrajectories",
+        list(
+          mapId = "map",
+          trajectories = trajectory_payload,
+          duration = 6500,
+          steps = 170,
+          lineWeight = 4
+        )
+      )
+    }, once = TRUE)
+    
+  }, ignoreInit = TRUE)
+  
+  
+  
   
   build_current_map_for_download <- function() {
     req(map_rv())
@@ -6054,17 +6371,21 @@ server <- function(input, output, session) {
       # Do not add it again to the exported map.
       this_color <- if (is_reference_player) REFERENCE_TRAJ_COLOR else colors[i]
       
-      m <- m %>%
-        addPolylines(
-          lng = traj$lng,
-          lat = traj$lat,
-          color = this_color,
-          weight = MAP_TRAJ_WEIGHT,
-          opacity = MAP_TRAJ_OPACITY,
-          group = MAP_TRAJ_GROUP,
-          label = player_label,
-          popup = player_label
-        )
+      # The reference player's trajectory is already inside map_rv().
+      # Do not add it again to the exported map.
+      if (!is_reference_player) {
+        m <- m %>%
+          addPolylines(
+            lng = traj$lng,
+            lat = traj$lat,
+            color = this_color,
+            weight = MAP_TRAJ_WEIGHT,
+            opacity = MAP_TRAJ_OPACITY,
+            group = MAP_TRAJ_GROUP,
+            label = player_label,
+            popup = player_label
+          )
+      }
       
       # Still include the reference player in the legend and bounds
       legend_labels <- c(legend_labels, player_label)
