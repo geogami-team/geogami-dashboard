@@ -411,7 +411,7 @@ ui <- page_sidebar(
         div(style = "min-width: 300px;", uiOutput("file_selector_ui3"))
       ),
       textOutput("mapLegend"),
-      div(id="map", leafletOutput("map"), style = "margin-top: 5px"),
+      div(id = "map_container", leafletOutput("map"), style = "margin-top: 5px"),
       div(style = "border: 0px solid #ccc; padding: 10px; margin-top: 15px; border-radius: 8px;",
           downloadButton('downloadMap','Save the map'), full_screen = TRUE)
     ),
@@ -2048,6 +2048,144 @@ server <- function(input, output, session) {
   # apiURL_rv <- reactiveVal("http://localhost:3000")
   apiURL_rv <- reactiveVal("https://api.geogami.uni-muenster.de")
   
+  # ---------- Multi-player trajectories on Map tab START ----------
+  
+  MAP_TRAJ_GROUP <- "multi_player_trajectories"
+  
+  # Keep overlay trajectories visually consistent with the original red reference trajectory
+  MAP_TRAJ_WEIGHT <- 2
+  MAP_TRAJ_OPACITY <- 1
+  REFERENCE_TRAJ_COLOR <- "red"
+  
+  MAP_TRAJ_COLORS <- c(
+    "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
+    "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
+    "#003f5c", "#ffa600", "#58508d", "#ff6361", "#2f4b7c"
+  )
+  
+  # Small cache so we do not refetch the same track every time the map selector changes.
+  map_track_cache <- new.env(parent = emptyenv())
+  
+  observeEvent(input$selected_games, {
+    rm(list = ls(map_track_cache), envir = map_track_cache)
+  }, ignoreInit = TRUE)
+  
+  num_vec <- function(x) {
+    if (is.null(x) || length(x) == 0) return(numeric(0))
+    x <- unlist(x, use.names = FALSE)
+    if (is.character(x)) x <- gsub(",", ".", x, fixed = TRUE)
+    suppressWarnings(as.numeric(x))
+  }
+  
+  get_track_for_map <- function(track_id, api_url, token) {
+    key <- as.character(track_id)
+    
+    if (exists(key, envir = map_track_cache, inherits = FALSE)) {
+      return(get(key, envir = map_track_cache, inherits = FALSE))
+    }
+    
+    if (is.null(api_url) || is.na(api_url) || !nzchar(api_url) ||
+        is.null(token) || is.na(token) || !nzchar(token)) {
+      return(NULL)
+    }
+    
+    url <- paste0(api_url, "/track/", key)
+    tr <- fetch_games_data_from_server(url, token)
+    
+    if (!is.null(tr) && !is.null(tr$events)) {
+      tr$events <- fix_vr_distance_tasks(tr$events)
+      tr$events <- fix_direction_tasks(tr$events)
+    }
+    
+    assign(key, tr, envir = map_track_cache)
+    tr
+  }
+  
+  get_map_track_label <- function(track_id, tr = NULL, choices_now = NULL) {
+    label <- NA_character_
+    
+    if (!is.null(choices_now) && length(choices_now) > 0) {
+      idx <- which(choices_now == track_id)
+      if (length(idx) > 0) {
+        label <- names(choices_now)[idx[1]]
+      }
+    }
+    
+    if ((is.null(label) || is.na(label) || !nzchar(label)) &&
+        !is.null(tr) && !is.null(tr$players) && length(tr$players) > 0) {
+      label <- as.character(tr$players[1])
+    }
+    
+    if (is.null(label) || is.na(label) || !nzchar(label)) {
+      label <- as.character(track_id)
+    }
+    
+    label
+  }
+  
+  get_task_trajectory_df <- function(track, task_no) {
+    if (is.null(track) || is.null(track$waypoints)) {
+      return(data.frame(lng = numeric(0), lat = numeric(0)))
+    }
+    
+    wps <- track$waypoints
+    
+    if (is.null(wps$taskNo) ||
+        is.null(wps$position$coords$longitude) ||
+        is.null(wps$position$coords$latitude)) {
+      return(data.frame(lng = numeric(0), lat = numeric(0)))
+    }
+    
+    task_no_all <- suppressWarnings(as.integer(unlist(wps$taskNo, use.names = FALSE)))
+    keep <- which(task_no_all == as.integer(task_no))
+    
+    if (!length(keep)) {
+      return(data.frame(lng = numeric(0), lat = numeric(0)))
+    }
+    
+    lng <- num_vec(wps$position$coords$longitude[keep])
+    lat <- num_vec(wps$position$coords$latitude[keep])
+    
+    ts <- if (!is.null(wps$timestamp)) {
+      parse_ts(wps$timestamp[keep])
+    } else {
+      rep(as.POSIXct(NA), length(keep))
+    }
+    
+    df <- data.frame(
+      lng = lng,
+      lat = lat,
+      ts = ts,
+      stringsAsFactors = FALSE
+    )
+    
+    df <- df[is.finite(df$lng) & is.finite(df$lat), , drop = FALSE]
+    
+    if (!nrow(df)) {
+      return(df)
+    }
+    
+    # Optional GPS accuracy filter, same idea as your existing map logic.
+    if (!is.null(wps$position$coords$accuracy)) {
+      acc <- num_vec(wps$position$coords$accuracy[keep])
+      acc <- acc[seq_len(min(length(acc), nrow(df)))]
+      
+      if (length(acc) == nrow(df)) {
+        df <- df[is.na(acc) | acc < 20, , drop = FALSE]
+      }
+    }
+    
+    if (nrow(df) > 1 && any(!is.na(df$ts))) {
+      df <- df[order(df$ts), , drop = FALSE]
+    }
+    
+    df
+  }
+  
+  # ---------- Multi-player trajectories on Map tab END ----------
+  
+  
+  
   # Observe the URL query string for the token parameter
   observe({
     query <- parseQueryString(session$clientData$url_search)
@@ -2516,22 +2654,61 @@ server <- function(input, output, session) {
     
     choices_now <- filtered_choices_r()
     
-    cur <- isolate(input$selected_data_file)
-    selected_now <- if (!is.null(cur) && cur %in% choices_now) cur else choices_now[1]
+    # Reference player: this keeps your existing map logic working.
+    cur_ref <- isolate(input$selected_data_file)
+    selected_ref <- if (
+      !is.null(cur_ref) &&
+      length(cur_ref) > 0 &&
+      cur_ref[1] %in% choices_now
+    ) {
+      cur_ref[1]
+    } else {
+      choices_now[1]
+    }
     
-    pickerInput(
-      "selected_data_file",
-      "Selected Players: ",
-      choices = choices_now,
-      selected = selected_now,
-      multiple = FALSE,
-      options = list(
-        `actions-box` = FALSE,
-        `live-search` = FALSE,
-        `none-selected-text` = "Select a player",
-        `width` = '100%',
-        container = FALSE,
-        size = 10
+    # Multi-player trajectory selector for the Map tab.
+    cur_map <- isolate(input$selected_map_files)
+    selected_map <- intersect(cur_map, choices_now)
+    
+    # By default, only show the reference player's trajectory.
+    # The user can use Select All inside the picker.
+    if (length(selected_map) == 0) {
+      selected_map <- selected_ref
+    }
+    
+    tagList(
+      pickerInput(
+        "selected_data_file",
+        "Reference player / map details:",
+        choices = choices_now,
+        selected = selected_ref,
+        multiple = FALSE,
+        options = list(
+          `actions-box` = FALSE,
+          `live-search` = FALSE,
+          `none-selected-text` = "Select a player",
+          `width` = '100%',
+          container = FALSE,
+          size = 10
+        )
+      ),
+      
+      pickerInput(
+        "selected_map_files",
+        "Players shown as trajectories:",
+        choices = choices_now,
+        selected = selected_map,
+        multiple = TRUE,
+        options = list(
+          `actions-box` = TRUE,
+          `live-search` = FALSE,
+          `none-selected-text` = "Select players for trajectories",
+          `select-all-text` = "Select all",
+          `deselect-all-text` = "Deselect all",
+          `width` = '100%',
+          container = FALSE,
+          size = 10
+        )
       )
     )
   })
@@ -5669,6 +5846,142 @@ server <- function(input, output, session) {
     map_rv()
   })
   
+  
+  # Overlay trajectories of multiple selected players on the Map tab.
+  # Overlay trajectories of multiple selected players on the Map tab.
+  observeEvent(
+    list(input$selected_map_files, input$num_value, input$selected_data_file, map_rv()),
+    {
+      req(input$selected_map_files)
+      req(input$num_value)
+      req(map_rv())
+      req(apiURL_rv())
+      req(accessToken_rv())
+      
+      selected_ids <- input$selected_map_files
+      task_no <- suppressWarnings(as.integer(input$num_value))
+      
+      ref_id <- if (!is.null(input$selected_data_file) && length(input$selected_data_file) > 0) {
+        as.character(input$selected_data_file[1])
+      } else {
+        NA_character_
+      }
+      
+      if (is.na(task_no) || task_no <= 0 || length(selected_ids) == 0) {
+        return()
+      }
+      
+      # IMPORTANT:
+      # Capture reactive values here, inside the observer.
+      # Do not call apiURL_rv(), accessToken_rv(), or choices_rv()
+      # inside session$onFlushed().
+      api_url_now <- apiURL_rv()
+      token_now <- accessToken_rv()
+      choices_now <- choices_rv()
+      
+      session$onFlushed(function() {
+        
+        proxy <- leafletProxy(
+          mapId = "map",
+          session = session,
+          deferUntilFlush = FALSE
+        ) %>%
+          clearGroup(MAP_TRAJ_GROUP) %>%
+          clearControls()
+        
+        legend_labels <- character(0)
+        legend_colors <- character(0)
+        all_lng <- numeric(0)
+        all_lat <- numeric(0)
+        
+        colors <- rep(MAP_TRAJ_COLORS, length.out = length(selected_ids))
+        
+        for (i in seq_along(selected_ids)) {
+          track_id <- selected_ids[i]
+          
+          tr <- get_track_for_map(
+            track_id = track_id,
+            api_url = api_url_now,
+            token = token_now
+          )
+          
+          if (is.null(tr)) next
+          
+          traj <- get_task_trajectory_df(tr, task_no)
+          if (is.null(traj) || nrow(traj) < 2) next
+          
+          player_label <- get_map_track_label(
+            track_id = track_id,
+            tr = tr,
+            choices_now = choices_now
+          )
+          
+          is_reference_player <- !is.na(ref_id) && as.character(track_id) == ref_id
+          
+          # The reference player's trajectory is already drawn in the base map.
+          # Do not draw it again, otherwise it becomes visually thicker.
+          this_color <- if (is_reference_player) REFERENCE_TRAJ_COLOR else colors[i]
+          
+          proxy <- proxy %>%
+            addPolylines(
+              lng = traj$lng,
+              lat = traj$lat,
+              color = this_color,
+              weight = MAP_TRAJ_WEIGHT,
+              opacity = MAP_TRAJ_OPACITY,
+              group = MAP_TRAJ_GROUP,
+              label = player_label,
+              popup = player_label
+            )
+          
+          # Still include the reference player in the legend and map bounds
+          legend_labels <- c(legend_labels, player_label)
+          legend_colors <- c(legend_colors, this_color)
+          all_lng <- c(all_lng, traj$lng)
+          all_lat <- c(all_lat, traj$lat)
+        }
+        
+        if (length(legend_labels) > 0) {
+          proxy <- proxy %>%
+            addLegend(
+              position = "topright",
+              colors = legend_colors,
+              labels = legend_labels,
+              opacity = 1,
+              title = paste("Task", task_no, "trajectories")
+            )
+        }
+        
+        if (length(all_lng) > 1 && length(all_lat) > 1) {
+          lng_range <- range(all_lng, na.rm = TRUE)
+          lat_range <- range(all_lat, na.rm = TRUE)
+          
+          if (is.finite(lng_range[1]) && is.finite(lng_range[2]) &&
+              is.finite(lat_range[1]) && is.finite(lat_range[2])) {
+            
+            if (lng_range[1] == lng_range[2] && lat_range[1] == lat_range[2]) {
+              proxy <- proxy %>%
+                setView(lng = lng_range[1], lat = lat_range[1], zoom = 19)
+            } else {
+              proxy <- proxy %>%
+                fitBounds(
+                  lng1 = lng_range[1],
+                  lat1 = lat_range[1],
+                  lng2 = lng_range[2],
+                  lat2 = lat_range[2]
+                )
+            }
+          }
+        }
+        
+      }, once = TRUE)
+      
+    },
+    ignoreInit = FALSE,
+    priority = -100
+  )
+  
+  
   # Single download handler for maps (works for real + virtual env)
   # output$downloadMap <- downloadHandler(
   #   filename = function() {
@@ -5680,33 +5993,157 @@ server <- function(input, output, session) {
   #   }
   # )
   
+  build_current_map_for_download <- function() {
+    req(map_rv())
+    
+    m <- map_rv()
+    
+    selected_ids <- input$selected_map_files
+    
+    ref_id <- if (!is.null(input$selected_data_file) && length(input$selected_data_file) > 0) {
+      as.character(input$selected_data_file[1])
+    } else {
+      NA_character_
+    }
+    
+    # fallback: if no multi-player selection exists, save the reference player map
+    if (is.null(selected_ids) || length(selected_ids) == 0) {
+      selected_ids <- input$selected_data_file
+    }
+    
+    task_no <- suppressWarnings(as.integer(input$num_value))
+    
+    if (is.na(task_no) || task_no <= 0 || is.null(selected_ids) || length(selected_ids) == 0) {
+      return(m)
+    }
+    
+    api_url_now <- apiURL_rv()
+    token_now   <- accessToken_rv()
+    choices_now <- choices_rv()
+    
+    legend_labels <- character(0)
+    legend_colors <- character(0)
+    all_lng <- numeric(0)
+    all_lat <- numeric(0)
+    
+    colors <- rep(MAP_TRAJ_COLORS, length.out = length(selected_ids))
+    
+    for (i in seq_along(selected_ids)) {
+      track_id <- selected_ids[i]
+      
+      tr <- get_track_for_map(
+        track_id = track_id,
+        api_url  = api_url_now,
+        token    = token_now
+      )
+      
+      if (is.null(tr)) next
+      
+      traj <- get_task_trajectory_df(tr, task_no)
+      if (is.null(traj) || nrow(traj) < 2) next
+      
+      player_label <- get_map_track_label(
+        track_id = track_id,
+        tr = tr,
+        choices_now = choices_now
+      )
+      
+      is_reference_player <- !is.na(ref_id) && as.character(track_id) == ref_id
+      
+      # The reference player's trajectory is already inside map_rv().
+      # Do not add it again to the exported map.
+      this_color <- if (is_reference_player) REFERENCE_TRAJ_COLOR else colors[i]
+      
+      m <- m %>%
+        addPolylines(
+          lng = traj$lng,
+          lat = traj$lat,
+          color = this_color,
+          weight = MAP_TRAJ_WEIGHT,
+          opacity = MAP_TRAJ_OPACITY,
+          group = MAP_TRAJ_GROUP,
+          label = player_label,
+          popup = player_label
+        )
+      
+      # Still include the reference player in the legend and bounds
+      legend_labels <- c(legend_labels, player_label)
+      legend_colors <- c(legend_colors, this_color)
+      all_lng <- c(all_lng, traj$lng)
+      all_lat <- c(all_lat, traj$lat)
+    }
+    
+    if (length(legend_labels) > 0) {
+      m <- m %>%
+        addLegend(
+          position = "topright",
+          colors = legend_colors,
+          labels = legend_labels,
+          opacity = 1,
+          title = paste("Task", task_no, "trajectories")
+        )
+    }
+    
+    if (length(all_lng) > 1 && length(all_lat) > 1) {
+      lng_range <- range(all_lng, na.rm = TRUE)
+      lat_range <- range(all_lat, na.rm = TRUE)
+      
+      if (is.finite(lng_range[1]) && is.finite(lng_range[2]) &&
+          is.finite(lat_range[1]) && is.finite(lat_range[2])) {
+        
+        if (lng_range[1] == lng_range[2] && lat_range[1] == lat_range[2]) {
+          m <- m %>%
+            setView(lng = lng_range[1], lat = lat_range[1], zoom = 19)
+        } else {
+          m <- m %>%
+            fitBounds(
+              lng1 = lng_range[1],
+              lat1 = lat_range[1],
+              lng2 = lng_range[2],
+              lat2 = lat_range[2]
+            )
+        }
+      }
+    }
+    
+    m
+  }
+  
   output$downloadMap <- downloadHandler(
     filename = function() {
-      paste0("map_", Sys.Date(), ".zip")
+      task_no <- suppressWarnings(as.integer(input$num_value))
+      
+      if (is.na(task_no)) {
+        paste0("map_", Sys.Date(), ".zip")
+      } else {
+        paste0("map_task_", task_no, "_", Sys.Date(), ".zip")
+      }
     },
+    
     content = function(file) {
       req(map_rv())
-
+      
+      # Build export map with the currently selected trajectories
+      export_map <- build_current_map_for_download()
+      
       # Temp dir for export
       tmpdir <- tempfile("map_export_")
       dir.create(tmpdir)
-
-      # have Saved widget
+      
+      # Save widget
       htmlfile <- file.path(tmpdir, "map.html")
+      
       htmlwidgets::saveWidget(
-        widget = map_rv(),
+        widget = export_map,
         file   = htmlfile,
         selfcontained = FALSE
       )
-      # At this point tmpdir contains:
-      #   - map.html
-      #   - map_files/   (Leaflet JS/CSS etc.)
-
-      #Copied virtual-environment images into assets/vir_envs_layers
+      
+      # Copy virtual-environment images into assets/vir_envs_layers
       from_dir <- file.path(getwd(), "www", "assets", "vir_envs_layers")
       to_dir   <- file.path(tmpdir, "assets", "vir_envs_layers")
       dir.create(to_dir, recursive = TRUE, showWarnings = FALSE)
-
+      
       if (dir.exists(from_dir)) {
         file.copy(
           from = list.files(from_dir, full.names = TRUE),
@@ -5714,15 +6151,18 @@ server <- function(input, output, session) {
           recursive = TRUE
         )
       }
-
-      # Zipped EVERYTHING in tmpdir (html + *_files + assets)
+      
+      # Zip everything in tmpdir
       oldwd <- getwd()
+      on.exit(setwd(oldwd), add = TRUE)
+      
       setwd(tmpdir)
+      
       zip::zipr(
         zipfile = file,
-        files   = list.files()  # "map.html", "map_files", "assets", …
+        files   = list.files(),
+        recurse = TRUE
       )
-      setwd(oldwd)
     }
   )
 
