@@ -2251,6 +2251,125 @@ server <- function(input, output, session) {
     # keep only players currently selected in the left sidebar
     all_choices[all_choices %in% sel]
   })
+  
+  
+  #### Sync selected single player across All tasks / Map / Pictures START ####
+  
+  selected_single_player_rv <- reactiveVal(NULL)
+  
+  current_single_player <- reactive({
+    choices_now <- filtered_choices_r()
+    cur <- selected_single_player_rv()
+    
+    if (!is.null(cur) && length(cur) > 0 && cur[1] %in% choices_now) {
+      cur[1]
+    } else {
+      choices_now[1]
+    }
+  })
+  
+  sync_single_player_pickers <- function(selected = NULL) {
+    choices_now <- filtered_choices_r()
+    
+    if (is.null(selected) || length(selected) == 0 || !(selected[1] %in% choices_now)) {
+      selected <- choices_now[1]
+    } else {
+      selected <- selected[1]
+    }
+    
+    updatePickerInput(
+      session,
+      "selected_data_file_all",
+      choices = choices_now,
+      selected = selected
+    )
+    
+    updatePickerInput(
+      session,
+      "selected_data_file_map",
+      choices = choices_now,
+      selected = selected
+    )
+    
+    updatePickerInput(
+      session,
+      "selected_data_file_pictures",
+      choices = choices_now,
+      selected = selected
+    )
+  }
+  
+  # When the left sidebar selected players change, keep the selected player valid
+  observeEvent(filtered_choices_r(), {
+    choices_now <- filtered_choices_r()
+    cur <- selected_single_player_rv()
+    
+    selected_now <- if (!is.null(cur) && length(cur) > 0 && cur[1] %in% choices_now) {
+      cur[1]
+    } else {
+      choices_now[1]
+    }
+    
+    selected_single_player_rv(selected_now)
+    sync_single_player_pickers(selected_now)
+  }, ignoreInit = FALSE)
+  
+  # If changed in All tasks tab
+  observeEvent(input$selected_data_file_all, {
+    req(input$selected_data_file_all)
+    
+    if (!identical(input$selected_data_file_all[1], selected_single_player_rv())) {
+      selected_single_player_rv(input$selected_data_file_all[1])
+    }
+  }, ignoreInit = TRUE)
+  
+  # If changed in Map tab
+  observeEvent(input$selected_data_file_map, {
+    req(input$selected_data_file_map)
+    
+    if (!identical(input$selected_data_file_map[1], selected_single_player_rv())) {
+      selected_single_player_rv(input$selected_data_file_map[1])
+    }
+  }, ignoreInit = TRUE)
+  
+  # If changed in Pictures tab
+  observeEvent(input$selected_data_file_pictures, {
+    req(input$selected_data_file_pictures)
+    
+    if (!identical(input$selected_data_file_pictures[1], selected_single_player_rv())) {
+      selected_single_player_rv(input$selected_data_file_pictures[1])
+    }
+  }, ignoreInit = TRUE)
+  
+  # Whenever the central selected player changes, update all three picker UIs
+  observeEvent(selected_single_player_rv(), {
+    req(selected_single_player_rv())
+    sync_single_player_pickers(selected_single_player_rv())
+  }, ignoreInit = TRUE)
+  
+  # When the reference player changes, reset the trajectory selector
+  # to the new reference player instead of keeping the old reference player.
+  observeEvent(current_single_player(), {
+    req(current_single_player())
+    req(filtered_choices_r())
+    
+    choices_now <- filtered_choices_r()
+    selected_ref <- current_single_player()
+    
+    if (!(selected_ref %in% choices_now)) return()
+    
+    updatePickerInput(
+      session,
+      "selected_map_files",
+      choices = choices_now,
+      selected = selected_ref
+    )
+  }, ignoreInit = TRUE)
+  
+  
+  #### Sync selected single player across All tasks / Map / Pictures END ####
+  
+  
   #### only players selected on left should appear on right *ends) #####
   
   
@@ -2661,12 +2780,10 @@ server <- function(input, output, session) {
     req(filtered_choices_r())
     
     choices_now <- filtered_choices_r()
-    
-    cur <- isolate(input$selected_data_file)
-    selected_now <- if (!is.null(cur) && cur %in% choices_now) cur else choices_now[1]
+    selected_now <- current_single_player()
     
     pickerInput(
-      "selected_data_file",
+      "selected_data_file_all",
       "Selected Players:",
       choices = choices_now,
       selected = selected_now,
@@ -2699,11 +2816,11 @@ server <- function(input, output, session) {
   # })
   
   loaded_json <- reactive({
-    req(input$selected_data_file)
+    req(current_single_player())
     req(accessToken_rv())
     req(apiURL_rv())
     
-    track_id <- input$selected_data_file[1]
+    track_id <- current_single_player()
     url <- paste0(apiURL_rv(), "/track/", track_id)
     
     d <- fetch_games_data_from_server(url, accessToken_rv())
@@ -2869,23 +2986,17 @@ server <- function(input, output, session) {
     choices_now <- filtered_choices_r()
     
     # Reference player
-    cur_ref <- isolate(input$selected_data_file)
-    selected_ref <- if (
-      !is.null(cur_ref) &&
-      length(cur_ref) > 0 &&
-      cur_ref[1] %in% choices_now
-    ) {
-      cur_ref[1]
-    } else {
-      choices_now[1]
-    }
+    selected_ref <- current_single_player()
     
     # Multi-player trajectory selector
     cur_map <- isolate(input$selected_map_files)
-    selected_map <- intersect(cur_map, choices_now)
     
-    if (length(selected_map) == 0) {
+    # First time opening the Map tab: default to the reference player.
+    # But if the user clicked "Deselect all", keep it empty.
+    if (is.null(cur_map)) {
       selected_map <- selected_ref
+    } else {
+      selected_map <- intersect(cur_map, choices_now)
     }
     
     div(
@@ -2894,7 +3005,7 @@ server <- function(input, output, session) {
       div(
         style = "width: 300px;",
         pickerInput(
-          "selected_data_file",
+          "selected_data_file_map",
           "Reference player / map details:",
           choices = choices_now,
           selected = selected_ref,
@@ -2948,12 +3059,10 @@ server <- function(input, output, session) {
     req(filtered_choices_r())
     
     choices_now <- filtered_choices_r()
-    
-    cur <- isolate(input$selected_data_file)
-    selected_now <- if (!is.null(cur) && cur %in% choices_now) cur else choices_now[1]
+    selected_now <- current_single_player()
     
     pickerInput(
-      "selected_data_file",
+      "selected_data_file_pictures",
       "Selected Players: ",
       choices = choices_now,
       selected = selected_now,
@@ -2972,7 +3081,8 @@ server <- function(input, output, session) {
   #####Big table code
   df_react <- reactiveVal()
   
-  observeEvent(req(input$selected_data_file, num_value_num()), {
+  observeEvent(list(current_single_player(), num_value_num()), {
+    req(current_single_player())
     req(num_value_num() != 0 && num_value_num() > 0)
     
     data <- loaded_json()  # load selected JSON
@@ -6112,24 +6222,46 @@ server <- function(input, output, session) {
   # Overlay trajectories of multiple selected players on the Map tab.
   # Overlay trajectories of multiple selected players on the Map tab.
   observeEvent(
-    list(input$selected_map_files, input$num_value, input$selected_data_file, map_rv()),
+    list(input$selected_map_files, input$num_value, current_single_player(), map_rv()),
     {
-      req(input$selected_map_files)
       req(input$num_value)
       req(map_rv())
       req(apiURL_rv())
       req(accessToken_rv())
       
       selected_ids <- input$selected_map_files
-      task_no <- suppressWarnings(as.integer(input$num_value))
-      
-      ref_id <- if (!is.null(input$selected_data_file) && length(input$selected_data_file) > 0) {
-        as.character(input$selected_data_file[1])
-      } else {
-        NA_character_
+      if (is.null(selected_ids)) {
+        selected_ids <- character(0)
       }
       
+      task_no <- suppressWarnings(as.integer(input$num_value))
+      
+      req(current_single_player())
+      ref_id <- as.character(current_single_player())
+      
+      # If no player is selected in "Players shown as trajectories",
+      # clear the old overlay and old legend from the map.
       if (is.na(task_no) || task_no <= 0 || length(selected_ids) == 0) {
+        session$onFlushed(function() {
+          leafletProxy(
+            mapId = "map",
+            session = session,
+            deferUntilFlush = FALSE
+          ) %>%
+            clearGroup(MAP_TRAJ_GROUP) %>%
+            clearGroup(REFERENCE_BASE_TRAJ_GROUP) %>%
+            clearControls()
+          
+          # Also clear any animated trajectory layer if it exists.
+          session$sendCustomMessage(
+            "animateTrajectories",
+            list(
+              mapId = "map",
+              trajectories = list()
+            )
+          )
+        }, once = TRUE)
+        
         return()
       }
       
@@ -6149,6 +6281,7 @@ server <- function(input, output, session) {
           deferUntilFlush = FALSE
         ) %>%
           clearGroup(MAP_TRAJ_GROUP) %>%
+          clearGroup(REFERENCE_BASE_TRAJ_GROUP) %>%
           clearControls()
         
         legend_labels <- character(0)
@@ -6186,19 +6319,19 @@ server <- function(input, output, session) {
           
           # The reference player's trajectory is already drawn in the base map.
           # Do not draw it again, otherwise it can look thicker.
-          if (!is_reference_player) {
-            proxy <- proxy %>%
-              addPolylines(
-                lng = traj$lng,
-                lat = traj$lat,
-                color = this_color,
-                weight = MAP_TRAJ_WEIGHT,
-                opacity = MAP_TRAJ_OPACITY,
-                group = MAP_TRAJ_GROUP,
-                label = player_label,
-                popup = player_label
-              )
-          }
+          # Draw every player selected in "Players shown as trajectories",
+          # including the reference player if it is selected there.
+          proxy <- proxy %>%
+            addPolylines(
+              lng = traj$lng,
+              lat = traj$lat,
+              color = this_color,
+              weight = MAP_TRAJ_WEIGHT,
+              opacity = MAP_TRAJ_OPACITY,
+              group = MAP_TRAJ_GROUP,
+              label = player_label,
+              popup = player_label
+            )
           
           # Still include the reference player in the legend and map bounds
           legend_labels <- c(legend_labels, player_label)
@@ -6249,25 +6382,42 @@ server <- function(input, output, session) {
   
   
   observeEvent(input$visualize_trajectories_btn, {
-    req(input$selected_map_files)
     req(input$num_value)
     req(map_rv())
     req(apiURL_rv())
     req(accessToken_rv())
     
     selected_ids <- input$selected_map_files
+    if (is.null(selected_ids)) {
+      selected_ids <- character(0)
+    }
+    
     task_no <- suppressWarnings(as.integer(input$num_value))
     
     if (is.na(task_no) || task_no <= 0 || length(selected_ids) == 0) {
-      showNotification("Please select a valid task and at least one player.", type = "warning")
+      leafletProxy(
+        mapId = "map",
+        session = session,
+        deferUntilFlush = FALSE
+      ) %>%
+        clearGroup(MAP_TRAJ_GROUP) %>%
+        clearGroup(REFERENCE_BASE_TRAJ_GROUP) %>%
+        clearControls()
+      
+      session$sendCustomMessage(
+        "animateTrajectories",
+        list(
+          mapId = "map",
+          trajectories = list()
+        )
+      )
+      
+      showNotification("No trajectory player selected.", type = "warning")
       return()
     }
     
-    ref_id <- if (!is.null(input$selected_data_file) && length(input$selected_data_file) > 0) {
-      as.character(input$selected_data_file[1])
-    } else {
-      NA_character_
-    }
+    req(current_single_player())
+    ref_id <- as.character(current_single_player())
     
     api_url_now <- apiURL_rv()
     token_now <- accessToken_rv()
@@ -6347,15 +6497,11 @@ server <- function(input, output, session) {
     
     selected_ids <- input$selected_map_files
     
-    ref_id <- if (!is.null(input$selected_data_file) && length(input$selected_data_file) > 0) {
-      as.character(input$selected_data_file[1])
-    } else {
-      NA_character_
-    }
+    ref_id <- as.character(current_single_player())
     
     # fallback: if no multi-player selection exists, save the reference player map
     if (is.null(selected_ids) || length(selected_ids) == 0) {
-      selected_ids <- input$selected_data_file
+      selected_ids <- current_single_player()
     }
     
     task_no <- suppressWarnings(as.integer(input$num_value))
