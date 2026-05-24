@@ -255,7 +255,26 @@ ui <- page_sidebar(
 .bootstrap-select .dropdown-menu li:hover a {
   background-color: #27e7f5 !important; /* light teal-blue background */
   color: #000 !important;                /* ensure text stays readable */
-    
+}
+
+/* Keep long information assignment text to max 2 visible lines */
+.assignment-two-lines {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: normal !important;
+  line-height: 1.25em;
+  max-height: 2.5em;
+  cursor: help;
+}
+
+/* Better vertical alignment for multi-line table cells */
+#iris_data table.dataTable tbody td {
+  vertical-align: top;
+}
+
 
   "))
   ),
@@ -357,7 +376,24 @@ ui <- page_sidebar(
             uiOutput("file_selector_ui"))
       ),
       
-      uiOutput("player_info_box"),
+      div(
+        style = "display: flex; justify-content: space-between; align-items: flex-end; gap: 20px; margin-bottom: 10px;",
+        
+        uiOutput("player_info_box"),
+        
+        div(
+          style = "min-width: 280px; text-align: right;",
+          switchInput(
+            inputId = "advanced_direction_analysis_all",
+            label = "Advanced Direction Task Analysis",
+            value = FALSE,
+            onLabel = "On",
+            offLabel = "Off",
+            size = "small"
+          )
+        )
+      ),
+      
       DTOutput('iris_data'),
       div(
         style = "border: 0px solid #ccc; padding: 10px; margin-top: 15px; border-radius: 8px;",
@@ -413,7 +449,15 @@ ui <- page_sidebar(
       ),
       textOutput("tabLegend"),
       conditionalPanel(
-        condition = "output.tabLegend == 'Task type: Navigation to flag' || output.tabLegend == 'Task type: Navigation with arrow' || output.tabLegend == 'Task type: Navigation via text' || output.tabLegend == 'Task type: Navigation via photo' || output.tabLegend == 'Task type: Free'",
+        condition = "
+          output.tabLegend == 'Task type: Navigation to flag' ||
+          output.tabLegend == 'Task type: Navigation with arrow' ||
+          output.tabLegend == 'Task type: Navigation via text' ||
+          output.tabLegend == 'Task type: Navigation via photo' ||
+          output.tabLegend == 'Task type: Self location' ||
+          output.tabLegend == 'Task type: Object location' ||
+          output.tabLegend == 'Task type: Free'
+        ",
         card(
           h4(textOutput("cmp_table1_title", inline = TRUE)),
           tableOutput('cmp_table1'),
@@ -423,7 +467,29 @@ ui <- page_sidebar(
       ),
       conditionalPanel(
         condition = "output.tabLegend == 'Task type: Direction determination'",
-        card(h4("Direction Task Comparison"), tableOutput('cmp_table2'), downloadButton('save_table2', 'Save to csv'), style = "margin-top: 10px")
+        card(
+          div(
+            style = "display: flex; justify-content: space-between; align-items: center; gap: 20px; margin-bottom: 10px;",
+            
+            h4("Direction Task Comparison", style = "margin: 0;"),
+            
+            div(
+              style = "min-width: 280px; text-align: right;",
+              switchInput(
+                inputId = "advanced_direction_analysis_compare",
+                label = "Advanced Direction Task Analysis",
+                value = FALSE,
+                onLabel = "On",
+                offLabel = "Off",
+                size = "small"
+              )
+            )
+          ),
+          
+          tableOutput('cmp_table2'),
+          downloadButton('save_table2', 'Save to csv'),
+          style = "margin-top: 10px"
+        )
       )
     ),
     tabPanel(
@@ -752,6 +818,61 @@ server <- function(input, output, session) {
       direction_error = direction_error
     )
   }
+  
+  
+  ###### STARTING - helper function for another column of all tasks main tab panel i.e Final Answer for direction determination####
+  
+  get_final_answer_direction <- function(j, evts) {
+    task_type <- try(safe_scalar(evts$task$type[j]), silent = TRUE)
+    task_type <- if (inherits(task_type, "try-error")) NA_character_ else as.character(task_type)
+    
+    eval_type <- try(safe_scalar(evts$task$evaluate[j]), silent = TRUE)
+    eval_type <- if (inherits(eval_type, "try-error")) NA_character_ else as.character(eval_type)
+    
+    is_dir <- (!is.na(task_type) && task_type == "theme-direction") ||
+      (!is.na(eval_type) && eval_type %in% c("evalMapDirection", "evalDirection"))
+    
+    if (!is_dir) {
+      return(NA_real_)
+    }
+    
+    dir_parts <- get_direction_components(j, evts)
+    
+    # evalDirection:
+    # player rotates/faces a direction.
+    # submitted answer = answer$compassHeading = Final viewing direction
+    if (!is.na(eval_type) && eval_type == "evalDirection") {
+      return(dir_parts$final_viewing_direction)
+    }
+    
+    # evalMapDirection:
+    # player marks/clicks a direction on the map.
+    # submitted answer = answer$clickDirection = Pointing direction
+    if (!is.na(eval_type) && eval_type == "evalMapDirection") {
+      return(dir_parts$pointing_direction)
+    }
+    
+    # Safe fallback for older/irregular direction tasks:
+    # if clickDirection exists, treat pointing direction as final answer;
+    # otherwise use final viewing direction.
+    click_direction <- num(tryCatch(
+      safe_scalar(evts$answer$clickDirection[j]),
+      error = function(e) NA
+    ))
+    
+    if (is.finite(click_direction)) {
+      return(dir_parts$pointing_direction)
+    }
+    
+    dir_parts$final_viewing_direction
+  }
+  
+  ###### ENDING - helper function for another column of all tasks main tab panel i.e Final Answer for direction determination####
+  
+  
+  
+  
+  
   
   # ---- Direction column helpers for All tasks table ENDS ----
   
@@ -1575,6 +1696,7 @@ server <- function(input, output, session) {
       final_viewing_direction <- NA_real_
       pointing_direction <- NA_real_
       rotation_angle <- NA_real_
+      final_answer_direction <- NA_real_
       
       
       
@@ -1597,6 +1719,14 @@ server <- function(input, output, session) {
         
         # Rotation from initial viewing direction to final viewing direction
         rotation_angle <- get_rotation_angle(final_idx, evts)
+        
+        # Final submitted answer direction:
+        # evalDirection    -> final viewing direction
+        # evalMapDirection -> pointing direction
+        # If the task was not submitted, keep this blank.
+        if (has_ok_click) {
+          final_answer_direction <- get_final_answer_direction(final_idx, evts)
+        }
         
         # Make Compare Players error consistent with All tasks error
         err_deg <- dir_parts$direction_error
@@ -1631,6 +1761,7 @@ server <- function(input, output, session) {
         final_viewing_direction = final_viewing_direction,
         pointing_direction = pointing_direction,
         rotation_angle = rotation_angle,
+        final_answer_direction = final_answer_direction,
         dist_to_target_m = dist_to_target_m,
         dist_travel_m = dist_travel_m,
         error_txt = error_txt,
@@ -1663,6 +1794,64 @@ server <- function(input, output, session) {
   }
   #######HELPER FUNCTION FOR CLEANLY EXPORTING AND DOWNLOADING THE CSV (USED FOR THE FUNCTION BELOW THAT IS 'BUILD_BIG_TABLE_EXPORT') - END ######
   
+  
+  ###########STARTS - HELPER FUNCTION FOR MAKING INFORMATION TEXT SHORTER THAT IS UPTO 2 LINES ONLY ON THE ALL TASKS MAIN TAB###########
+  INFO_ASSIGNMENT_MAX_CHARS <- 150
+  
+  two_line_visible_text <- function(x, max_chars = INFO_ASSIGNMENT_MAX_CHARS) {
+    x <- clean_export_text(x)
+    
+    too_long <- !is.na(x) & nchar(x, type = "chars") > max_chars
+    x[too_long] <- paste0(substr(x[too_long], 1, max_chars - 3), "...")
+    
+    x
+  }
+  
+  assignment_two_line_html <- function(x, max_chars = INFO_ASSIGNMENT_MAX_CHARS) {
+    full_text <- clean_export_text(x)
+    visible_text <- two_line_visible_text(full_text, max_chars)
+    
+    mapply(function(full, visible) {
+      if (is.na(full)) return(NA_character_)
+      
+      paste0(
+        '<span class="assignment-two-lines" title="',
+        htmltools::htmlEscape(full),
+        '">',
+        htmltools::htmlEscape(visible),
+        '</span>'
+      )
+    }, full_text, visible_text, USE.NAMES = FALSE)
+  }
+  
+  html_visible_text <- function(x) {
+    x <- as.character(x)
+    x <- gsub("<[^>]+>", "", x)
+    x <- gsub("&nbsp;", " ", x, fixed = TRUE)
+    x <- gsub("&amp;", "&", x, fixed = TRUE)
+    x <- gsub("&lt;", "<", x, fixed = TRUE)
+    x <- gsub("&gt;", ">", x, fixed = TRUE)
+    x <- gsub("&quot;", "\"", x, fixed = TRUE)
+    x <- gsub("&#39;", "'", x, fixed = TRUE)
+    clean_export_text(x)
+  }
+  
+  apply_info_assignment_limit <- function(df, html = FALSE) {
+    if (is.null(df) || nrow(df) == 0) return(df)
+    if (!("Type" %in% names(df)) || !("Assignment" %in% names(df))) return(df)
+    
+    info_mask <- tolower(trimws(df$Type)) == "information"
+    
+    if (html) {
+      df$Assignment[info_mask] <- assignment_two_line_html(df$Assignment[info_mask])
+    } else {
+      df$Assignment[info_mask] <- two_line_visible_text(df$Assignment[info_mask])
+    }
+    
+    df
+  }
+  
+  ###########ENDS - HELPER FUNCTION FOR MAKING INFORMATION TEXT SHORTER THAT IS UPTO 2 LINES ONLY ON THE ALL TASKS MAIN TAB###########
   
   
   ######## MAKING HELPER FUNCTION FOR ADDING THE NEW DOWNLOAD BUTTON IN BIG TABLE 'SAVE ALL TO CSV' START #############
@@ -1698,12 +1887,13 @@ server <- function(input, output, session) {
       Type = vapply(sm$task_type, pretty_task_type, character(1)),
       Assignment = clean_export_text(sm$assignment),
       Answer = clean_export_text(sm$answer_txt),
-      Time = ifelse(is.na(sm$time_s), NA_character_, paste0(sm$time_s, " s")),
+      `Time(s)` = ifelse(is.na(sm$time_s), NA_character_, paste0(sm$time_s, " s")),
       Tries = sm$tries,
       `Viewing direction` = format_bearing_deg(sm$viewing_direction),
       `Final viewing direction` = format_bearing_deg(sm$final_viewing_direction),
       `Pointing direction` = format_bearing_deg(sm$pointing_direction),
       `Rotation angle` = format_angle_deg(sm$rotation_angle),
+      `Final Answer` = format_bearing_deg(sm$final_answer_direction),
       check.names = FALSE,
       stringsAsFactors = FALSE
     )
@@ -1717,7 +1907,11 @@ server <- function(input, output, session) {
     df[["Final viewing direction"]][info_mask] <- NA_character_
     df[["Pointing direction"]][info_mask] <- NA_character_
     df[["Rotation angle"]][info_mask] <- NA_character_
+    df[["Final Answer"]][info_mask] <- NA_character_
     df[["Error in °/m"]][info_mask] <- NA_character_
+    
+    # For Save All Players CSV: save only the visible shortened information text
+    df <- apply_info_assignment_limit(df, html = FALSE)
     
     df
   }
@@ -1793,6 +1987,27 @@ server <- function(input, output, session) {
   }
   ####### ends  - MAKING HELPER FUNCTION TO CORRECT THE COMPARE PLAYERS TAB - CSV FILE DOWNLOAD#########
   
+  
+  ######Starts - Helper function for advanced direction analysis toggle buttons#####
+  # ---- Advanced Direction Task Analysis toggle helpers ----
+  advanced_direction_cols <- c(
+    "Viewing direction",
+    "Final viewing direction",
+    "Pointing direction",
+    "Rotation angle",
+    "Final Answer"
+  )
+  
+  drop_advanced_direction_cols <- function(df) {
+    if (is.null(df) || nrow(df) == 0) return(df)
+    df[, setdiff(names(df), advanced_direction_cols), drop = FALSE]
+  }
+  
+  advanced_direction_enabled <- reactive({
+    isTRUE(input$advanced_direction_analysis_all) ||
+      isTRUE(input$advanced_direction_analysis_compare)
+  })
+  ######ENDS - Helper function for advanced direction task toggle buttons#####
   
   
   
@@ -2701,12 +2916,13 @@ server <- function(input, output, session) {
       Type = vapply(sm$task_type, pretty_task_type, character(1)),
       Assignment = sm$assignment,
       Answer = sm$answer_txt,
-      Time = ifelse(is.na(sm$time_s), NA_character_, paste0(sm$time_s, " s")),
+      `Time(s)` = ifelse(is.na(sm$time_s), NA_character_, paste0(sm$time_s, " s")),
       Tries = sm$tries,
       `Viewing direction` = format_bearing_deg(sm$viewing_direction),
       `Final viewing direction` = format_bearing_deg(sm$final_viewing_direction),
       `Pointing direction` = format_bearing_deg(sm$pointing_direction),
       `Rotation angle` = format_angle_deg(sm$rotation_angle),
+      `Final Answer` = format_bearing_deg(sm$final_answer_direction),
       `Error in °/m` = sm$error_txt,
       check.names = FALSE,
       stringsAsFactors = FALSE
@@ -2719,7 +2935,10 @@ server <- function(input, output, session) {
     df[["Final viewing direction"]][info_mask] <- NA_character_
     df[["Pointing direction"]][info_mask] <- NA_character_
     df[["Rotation angle"]][info_mask] <- NA_character_
+    df[["Final Answer"]][info_mask] <- NA_character_
     df[["Error in °/m"]][info_mask] <- NA_character_
+    # For dashboard display: show max 2-line information text, full text on hover
+    df <- apply_info_assignment_limit(df, html = TRUE)
     
     
     
@@ -2844,8 +3063,18 @@ server <- function(input, output, session) {
     
     # Show table
     output$iris_data <- renderDT({
-      filtered_df()
-    }, options = list(pageLength = 10))
+      df_show <- filtered_df()
+      
+      if (!advanced_direction_enabled()) {
+        df_show <- drop_advanced_direction_cols(df_show)
+      }
+      
+      DT::datatable(
+        df_show,
+        escape = setdiff(names(df_show), "Assignment"),
+        options = list(pageLength = 10, ordering = FALSE)
+      )
+    })
     
     #---------logic for select/deselect all starts ----------------------
     observeEvent(input$select_all_tasks, {
@@ -2882,9 +3111,13 @@ server <- function(input, output, session) {
       content = function(file) {
         df_out <- filtered_df()
         
+        if (!advanced_direction_enabled()) {
+          df_out <- drop_advanced_direction_cols(df_out)
+        }
+        
         if (!is.null(df_out) && nrow(df_out) > 0) {
           if ("Assignment" %in% names(df_out)) {
-            df_out$Assignment <- clean_export_text(df_out$Assignment)
+            df_out$Assignment <- html_visible_text(df_out$Assignment)
           }
           if ("Answer" %in% names(df_out)) {
             df_out$Answer <- clean_export_text(df_out$Answer)
@@ -2985,6 +3218,10 @@ server <- function(input, output, session) {
           df_one <- apply_task_id_filter_export(df_one, selected_task_ids_now)
           if (nrow(df_one) == 0) next
           
+          if (!advanced_direction_enabled()) {
+            df_one <- drop_advanced_direction_cols(df_one)
+          }
+          
           player_name <- if (!is.null(tr$players) && length(tr$players) > 0) {
             as.character(tr$players[1])
           } else {
@@ -3020,9 +3257,9 @@ server <- function(input, output, session) {
         close(con)
         
         for (i in seq_along(player_blocks)) {
-          # Add exactly 2 blank lines BETWEEN players
+          # Add exactly 1 blank line BETWEEN players
           if (i > 1) {
-            cat("\r\n\r\n", file = file, append = TRUE)
+            cat("\r\n", file = file, append = TRUE)
           }
           
           utils::write.table(
@@ -3701,6 +3938,7 @@ server <- function(input, output, session) {
     # Tables
     ngts <- data.frame(
       Name = character(0),
+      Answer = character(0),
       Correct = character(0),
       Time = character(0),
       `Distance travelled` = character(0),
@@ -3717,6 +3955,7 @@ server <- function(input, output, session) {
       `Final viewing direction` = character(0),
       `Pointing direction` = character(0),
       `Rotation angle` = character(0),
+      `Final Answer` = character(0),
       Error = character(0),
       check.names = FALSE,
       stringsAsFactors = FALSE
@@ -3733,6 +3972,7 @@ server <- function(input, output, session) {
       if (!nrow(hit)) {
         ngts <- rbind(ngts, data.frame(
           Name = nm,
+          Answer = "Task not played",
           Correct = "Task not played",
           Time = NA_character_,
           `Distance travelled` = NA_character_,
@@ -3750,6 +3990,7 @@ server <- function(input, output, session) {
             `Final viewing direction` = NA_character_,
             `Pointing direction` = NA_character_,
             `Rotation angle` = NA_character_,
+            `Final Answer` = NA_character_,
             Error = NA_character_,
             check.names = FALSE,
             stringsAsFactors = FALSE
@@ -3771,9 +4012,27 @@ server <- function(input, output, session) {
       # - else (distance - accuracy) with 15m fallback
       dist_to_target_txt <- row$error_txt
       
+      
+      # STARTS : For free tasks, use the same Answer text as the All tasks big table
+      # Example: "Correct 700 m"
+      answer_txt <- row$answer_txt
+      
+      if (
+        is.null(answer_txt) ||
+        length(answer_txt) == 0 ||
+        is.na(answer_txt) ||
+        !nzchar(trimws(as.character(answer_txt)))
+      ) {
+        answer_txt <- correct_txt
+      }
+      
+      answer_txt <- as.character(answer_txt)
+      # ENDS : For free tasks, use the same Answer text as the All tasks big table
+      
       # Navigation-style table (also used in Statistics time-vs-distance)
       ngts <- rbind(ngts, data.frame(
         Name = nm,
+        Answer = answer_txt,
         Correct = ifelse(is.na(correct_txt), NA_character_, correct_txt),
         Time = time_txt,
         `Distance travelled` = dist_txt,
@@ -3788,6 +4047,7 @@ server <- function(input, output, session) {
         final_view_deg <- row$final_viewing_direction
         point_deg      <- row$pointing_direction
         rotation_deg   <- row$rotation_angle
+        final_answer_deg <- row$final_answer_direction
         
         cores <- rbind(cores, data.frame(
           Name = nm,
@@ -3797,6 +4057,7 @@ server <- function(input, output, session) {
           `Final viewing direction` = format_bearing_deg(final_view_deg),
           `Pointing direction` = format_bearing_deg(point_deg),
           `Rotation angle` = format_angle_deg(rotation_deg),
+          `Final Answer` = format_bearing_deg(final_answer_deg),
           Error = row$error_txt,
           check.names = FALSE,
           stringsAsFactors = FALSE
@@ -3805,8 +4066,26 @@ server <- function(input, output, session) {
     }
     
     # Render tables
-    output$cmp_table1 <- renderTable(ngts)
-    output$cmp_table2 <- renderTable(cores)
+    # Free tasks should only show: Name, Answer, Time
+    # Other route/navigation tasks keep the old columns
+    is_free_task <- isTRUE(!is.na(ref_task_type) && ref_task_type == "free")
+    
+    ngts_display <- if (is_free_task) {
+      ngts[, c("Name", "Answer", "Time"), drop = FALSE]
+    } else {
+      ngts[, c("Name", "Correct", "Time", "Distance travelled", "Error to target"), drop = FALSE]
+    }
+    
+    output$cmp_table1 <- renderTable(ngts_display)
+    output$cmp_table2 <- renderTable({
+      df_show <- cores
+      
+      if (!advanced_direction_enabled()) {
+        df_show <- drop_advanced_direction_cols(df_show)
+      }
+      
+      df_show
+    })
     
     # Legends
     t <- ref_task_type
@@ -3830,6 +4109,8 @@ server <- function(input, output, session) {
     output$cmp_table1_title <- renderText({
       if (!is.na(ref_task_type) && ref_task_type == "free") {
         "Free task comparison"
+      } else if (!is.na(ref_task_type) && ref_task_type %in% c("theme-loc", "theme-object")) {
+        "Location task comparison"
       } else {
         "Route length versus time"
       }
@@ -3930,24 +4211,51 @@ server <- function(input, output, session) {
     output$save_table1 <- downloadHandler(
       filename = function() {
         game_name_safe <- sanitize_filename(get_selected_game_name())
-        paste0("Compare_", game_name_safe, "_", selected_task_file_part, "_route_length_vs_time_", Sys.Date(), ".csv")
+        
+        file_suffix <- if (is_free_task) {
+          "free_task_comparison"
+        } else if (!is.na(ref_task_type) && ref_task_type %in% c("theme-loc", "theme-object")) {
+          "location_task_comparison"
+        } else {
+          "route_length_vs_time"
+        }
+        
+        paste0(
+          "Compare_",
+          game_name_safe,
+          "_",
+          selected_task_file_part,
+          "_",
+          file_suffix,
+          "_",
+          Sys.Date(),
+          ".csv"
+        )
       },
+      
       content = function(file) {
         game_name <- get_selected_game_name()
         
-        df_out <- ngts
-        
-        if (!is.null(df_out) && nrow(df_out) > 0) {
-          df_out <- data.frame(
-            Game = game_name,
-            Player = df_out$Name,
-            Correct = df_out$Correct,
-            Time = df_out$Time,
-            `Distance travelled` = df_out$`Distance travelled`,
-            `Error to target` = df_out$`Error to target`,
-            check.names = FALSE,
-            stringsAsFactors = FALSE
-          )
+        if (is_free_task) {
+          # Free task CSV should contain only these 3 columns
+          df_out <- ngts[, c("Name", "Answer", "Time"), drop = FALSE]
+          
+        } else {
+          # Normal route/navigation CSV keeps the existing format
+          df_out <- ngts
+          
+          if (!is.null(df_out) && nrow(df_out) > 0) {
+            df_out <- data.frame(
+              Game = game_name,
+              Player = df_out$Name,
+              Correct = df_out$Correct,
+              Time = df_out$Time,
+              `Distance travelled` = df_out$`Distance travelled`,
+              `Error to target` = df_out$`Error to target`,
+              check.names = FALSE,
+              stringsAsFactors = FALSE
+            )
+          }
         }
         
         write_csv_excel_utf8(df_out, file, na = "NA")
@@ -3964,17 +4272,15 @@ server <- function(input, output, session) {
         
         df_out <- cores
         
+        if (!advanced_direction_enabled()) {
+          df_out <- drop_advanced_direction_cols(df_out)
+        }
+        
         if (!is.null(df_out) && nrow(df_out) > 0) {
           df_out <- data.frame(
             Game = game_name,
             Player = df_out$Name,
-            Correct = df_out$Correct,
-            Time = df_out$Time,
-            `Viewing direction` = df_out[["Viewing direction"]],
-            `Final viewing direction` = df_out[["Final viewing direction"]],
-            `Pointing direction` = df_out[["Pointing direction"]],
-            `Rotation angle` = df_out[["Rotation angle"]],
-            Error = df_out$Error,
+            df_out[, setdiff(names(df_out), "Name"), drop = FALSE],
             check.names = FALSE,
             stringsAsFactors = FALSE
           )
@@ -4377,12 +4683,13 @@ server <- function(input, output, session) {
       Type = vapply(sm$task_type, pretty_task_type, character(1)),
       Assignment = sm$assignment,
       Answer = sm$answer_txt,
-      Time = ifelse(is.na(sm$time_s), NA_character_, paste0(sm$time_s, " s")),
+      `Time(s)` = ifelse(is.na(sm$time_s), NA_character_, paste0(sm$time_s, " s")),
       Tries = sm$tries,
       `Viewing direction` = format_bearing_deg(sm$viewing_direction),
       `Final viewing direction` = format_bearing_deg(sm$final_viewing_direction),
       `Pointing direction` = format_bearing_deg(sm$pointing_direction),
       `Rotation angle` = format_angle_deg(sm$rotation_angle),
+      `Final Answer` = format_bearing_deg(sm$final_answer_direction),
       `Error in °/m` = sm$error_txt,
       check.names = FALSE,
       stringsAsFactors = FALSE
@@ -4395,8 +4702,11 @@ server <- function(input, output, session) {
     df[["Final viewing direction"]][info_mask] <- NA_character_
     df[["Pointing direction"]][info_mask] <- NA_character_
     df[["Rotation angle"]][info_mask] <- NA_character_
+    df[["Final Answer"]][info_mask] <- NA_character_
     df[["Error in °/m"]][info_mask] <- NA_character_
     
+    # For dashboard display: show max 2-line information text, full text on hover
+    df <- apply_info_assignment_limit(df, html = TRUE)
     
     
     
@@ -4516,8 +4826,18 @@ server <- function(input, output, session) {
     
     # Show table
     output$iris_data <- renderDT({
-      filtered_df()
-    }, options = list(pageLength = 10))
+      df_show <- filtered_df()
+      
+      if (!advanced_direction_enabled()) {
+        df_show <- drop_advanced_direction_cols(df_show)
+      }
+      
+      DT::datatable(
+        df_show,
+        escape = setdiff(names(df_show), "Assignment"),
+        options = list(pageLength = 10, ordering = FALSE)
+      )
+    })
     
     #---------logic for select/deselect all starts ----------------------
     observeEvent(input$select_all_tasks, {
@@ -4552,9 +4872,13 @@ server <- function(input, output, session) {
       content = function(file) {
         df_out <- filtered_df()
         
+        if (!advanced_direction_enabled()) {
+          df_out <- drop_advanced_direction_cols(df_out)
+        }
+        
         if (!is.null(df_out) && nrow(df_out) > 0) {
           if ("Assignment" %in% names(df_out)) {
-            df_out$Assignment <- clean_export_text(df_out$Assignment)
+            df_out$Assignment <- html_visible_text(df_out$Assignment)
           }
           if ("Answer" %in% names(df_out)) {
             df_out$Answer <- clean_export_text(df_out$Answer)
@@ -5229,9 +5553,15 @@ server <- function(input, output, session) {
     )
     
     #CORRECT & ERRORS Table
-    output$cmp_table2 <- renderTable(
-      cores
-    )
+    output$cmp_table2 <- renderTable({
+      df_show <- cores
+      
+      if (!advanced_direction_enabled()) {
+        df_show <- drop_advanced_direction_cols(df_show)
+      }
+      
+      df_show
+    })
     
     output$tabLegend <- renderText({paste("Task type:",t)})
     output$graphLegend <- renderText({paste("Task type:",t)})
@@ -5273,6 +5603,39 @@ server <- function(input, output, session) {
   num_value_num <- reactive({
     suppressWarnings(as.integer(input$num_value))
   })
+  
+  #### STARTS - toggle buttons sync lock####
+  
+  # Sync the two Advanced Direction Task Analysis toggles
+  adv_dir_lock <- FALSE
+  
+  observeEvent(input$advanced_direction_analysis_all, {
+    if (adv_dir_lock) return()
+    
+    adv_dir_lock <<- TRUE
+    updateSwitchInput(
+      session,
+      inputId = "advanced_direction_analysis_compare",
+      value = isTRUE(input$advanced_direction_analysis_all)
+    )
+    adv_dir_lock <<- FALSE
+  }, ignoreInit = TRUE)
+  
+  observeEvent(input$advanced_direction_analysis_compare, {
+    if (adv_dir_lock) return()
+    
+    adv_dir_lock <<- TRUE
+    updateSwitchInput(
+      session,
+      inputId = "advanced_direction_analysis_all",
+      value = isTRUE(input$advanced_direction_analysis_compare)
+    )
+    adv_dir_lock <<- FALSE
+  }, ignoreInit = TRUE)
+  
+  #### ENDS - toggle buttons sync lock####
+  
+  
   
   # Preventing recursive updates
   sync_lock <- FALSE
