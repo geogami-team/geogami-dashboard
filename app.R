@@ -833,23 +833,21 @@ server <- function(input, output, session) {
     ifelse(is.finite(x), ((x %% 360) + 360) %% 360, NA_real_)
   }
   
-  format_bearing_deg <- function(x, digits = 2) {
-    x <- normalize_deg(x)
-    out <- rep(NA_character_, length(x))
-    ok <- is.finite(x)
-    out[ok] <- paste0(round(x[ok], digits), " °")
-    out
-  }
-  
-  
-  ## HELPER FUNCTION FOR ROTATION ANGLE COLUMN - STARTS ######
-  
-  format_angle_deg <- function(x, digits = 2) {
+  format_numeric_clean <- function(x, digits = 2) {
     x <- num(x)
     out <- rep(NA_character_, length(x))
     ok <- is.finite(x)
-    out[ok] <- paste0(round(x[ok], digits), " °")
+    out[ok] <- as.character(round(x[ok], digits))
     out
+  }
+  
+  format_bearing_deg <- function(x, digits = 2) {
+    x <- normalize_deg(x)
+    format_numeric_clean(x, digits)
+  }
+  
+  format_angle_deg <- function(x, digits = 2) {
+    format_numeric_clean(x, digits)
   }
   
   get_initial_viewing_bearing <- function(j, evts) {
@@ -1078,6 +1076,19 @@ server <- function(input, output, session) {
   ###########ends : Default fallback accuracy of Navigation and direction tasks #########
   
   
+  
+  ######renaming compare players tab columns with units - starts - helper function#######
+  rename_unit_headers <- function(df) {
+    if (is.null(df) || nrow(df) == 0) return(df)
+    
+    names(df)[names(df) == "Time"] <- "Time (s)"
+    names(df)[names(df) == "Distance travelled"] <- "Distance travelled (m)"
+    names(df)[names(df) == "Error to target"] <- "Error to target (m)"
+    names(df)[names(df) == "Error"] <- "Error (°)"
+    
+    df
+  }
+  ######renaming compare players tab columns with units - ENDS - helper function#######
   
   
   ####R helper function ##################
@@ -1433,7 +1444,7 @@ server <- function(input, output, session) {
       dir_parts <- get_direction_components(idx, evts)
       err_deg <- dir_parts$direction_error
       
-      if (is.finite(err_deg)) return(paste0(round(err_deg, 2), " °"))
+      if (is.finite(err_deg)) return(as.character(round(err_deg, 2)))
       return(NA_character_)
     }
     
@@ -1447,10 +1458,10 @@ server <- function(input, output, session) {
       } else {
         err_m
       }
-      return(paste0(round(shown_m, 2), " m"))
+      return(as.character(round(shown_m, 2)))
     }
     
-    paste0(round(err_m, 2), " m")
+    as.character(round(err_m, 2))
   }
   
   
@@ -2097,7 +2108,7 @@ server <- function(input, output, session) {
       Type = vapply(sm$task_type, pretty_task_type, character(1)),
       Assignment = clean_export_text(sm$assignment),
       Answer = clean_export_text(sm$answer_txt),
-      `Time(s)` = ifelse(is.na(sm$time_s), NA_character_, paste0(sm$time_s, " s")),
+      `Time(s)` = sm$time_s,
       Tries = sm$tries,
       `Viewing direction` = format_bearing_deg(sm$viewing_direction),
       `Final viewing direction` = format_bearing_deg(sm$final_viewing_direction),
@@ -3433,7 +3444,7 @@ server <- function(input, output, session) {
       Type = vapply(sm$task_type, pretty_task_type, character(1)),
       Assignment = sm$assignment,
       Answer = sm$answer_txt,
-      `Time(s)` = ifelse(is.na(sm$time_s), NA_character_, paste0(sm$time_s, " s")),
+      `Time(s)` = sm$time_s,
       Tries = sm$tries,
       `Viewing direction` = format_bearing_deg(sm$viewing_direction),
       `Final viewing direction` = format_bearing_deg(sm$final_viewing_direction),
@@ -4537,8 +4548,8 @@ server <- function(input, output, session) {
       row <- hit[1, , drop = FALSE]
       
       correct_txt <- row$status
-      time_txt <- if (is.na(row$time_s)) NA_character_ else paste0(row$time_s, " s")
-      dist_txt <- if (is.na(row$dist_travel_m)) NA_character_ else paste0(round(row$dist_travel_m), " m")
+      time_txt <- if (is.na(row$time_s)) NA_character_ else as.character(row$time_s)
+      dist_txt <- if (is.na(row$dist_travel_m)) NA_character_ else as.character(round(row$dist_travel_m))
       
       # Big-table style:
       # - blank if Correct
@@ -4609,7 +4620,10 @@ server <- function(input, output, session) {
       ngts[, c("Name", "Correct", "Time", "Distance travelled", "Error to target"), drop = FALSE]
     }
     
-    output$cmp_table1 <- renderTable(ngts_display)
+    output$cmp_table1 <- renderTable({
+      rename_unit_headers(ngts_display)
+    })
+    
     output$cmp_table2 <- renderTable({
       df_show <- cores
       
@@ -4617,7 +4631,7 @@ server <- function(input, output, session) {
         df_show <- drop_advanced_direction_cols(df_show)
       }
       
-      df_show
+      rename_unit_headers(df_show)
     })
     
     # Legends
@@ -4689,8 +4703,8 @@ server <- function(input, output, session) {
     output$pie_chart2 <- renderPlot({ pie_chart })
     
     # Time vs distance scatter (uses same ngts table)
-    time_num <- suppressWarnings(as.numeric(sub(" s$", "", ngts$Time)))
-    dist_num <- suppressWarnings(as.numeric(sub(" m$", "", ngts$`Distance travelled`)))
+    time_num <- suppressWarnings(as.numeric(ngts$Time))
+    dist_num <- suppressWarnings(as.numeric(ngts$`Distance travelled`))
     
     df_player <- data.frame(
       time = time_num,
@@ -4791,6 +4805,7 @@ server <- function(input, output, session) {
           }
         }
         
+        df_out <- rename_unit_headers(df_out)
         write_csv_excel_utf8(df_out, file, na = "NA")
       }
     )
@@ -4819,6 +4834,7 @@ server <- function(input, output, session) {
           )
         }
         
+        df_out <- rename_unit_headers(df_out)
         write_csv_excel_utf8(df_out, file, na = "NA")
       }
     )
@@ -5216,7 +5232,7 @@ server <- function(input, output, session) {
       Type = vapply(sm$task_type, pretty_task_type, character(1)),
       Assignment = sm$assignment,
       Answer = sm$answer_txt,
-      `Time(s)` = ifelse(is.na(sm$time_s), NA_character_, paste0(sm$time_s, " s")),
+      `Time(s)` = sm$time_s,
       Tries = sm$tries,
       `Viewing direction` = format_bearing_deg(sm$viewing_direction),
       `Final viewing direction` = format_bearing_deg(sm$final_viewing_direction),
