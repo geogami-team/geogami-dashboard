@@ -276,6 +276,62 @@ ui <- page_sidebar(
 }
 
 
+/* Stable layout for All tasks DT table */
+#iris_data table.dataTable {
+  table-layout: fixed !important;
+  width: 100% !important;
+}
+
+/* Row-number column added by DT */
+#iris_data table.dataTable thead th:nth-child(1),
+#iris_data table.dataTable tbody td:nth-child(1) {
+  width: 45px !important;
+  min-width: 45px !important;
+  max-width: 45px !important;
+  white-space: nowrap !important;
+}
+
+/* Type column */
+#iris_data table.dataTable thead th:nth-child(2),
+#iris_data table.dataTable tbody td:nth-child(2) {
+  width: 150px !important;
+  min-width: 150px !important;
+  max-width: 150px !important;
+  white-space: normal !important;
+}
+
+/* Assignment column - fixed */
+#iris_data table.dataTable thead th:nth-child(3),
+#iris_data table.dataTable tbody td:nth-child(3) {
+  width: 380px !important;
+  min-width: 380px !important;
+  max-width: 380px !important;
+  white-space: normal !important;
+}
+
+/* Numeric / direction columns */
+#iris_data table.dataTable thead th:nth-child(n+5),
+#iris_data table.dataTable tbody td:nth-child(n+5) {
+  text-align: center !important;
+  white-space: normal !important;
+}
+
+/* Compact header */
+#iris_data table.dataTable thead th {
+  font-size: 12px !important;
+  padding: 6px 5px !important;
+  vertical-align: middle !important;
+}
+
+/* Compact body */
+#iris_data table.dataTable tbody td {
+  font-size: 13px !important;
+  padding: 6px 5px !important;
+  vertical-align: top !important;
+}
+
+
+
   "),
                
                
@@ -1085,6 +1141,12 @@ server <- function(input, output, session) {
     names(df)[names(df) == "Distance travelled"] <- "Distance travelled (m)"
     names(df)[names(df) == "Error to target"] <- "Error to target (m)"
     names(df)[names(df) == "Error"] <- "Error (°)"
+    
+    names(df)[names(df) == "Viewing direction"] <- "Viewing dir. (°)"
+    names(df)[names(df) == "Final viewing direction"] <- "Final view dir. (°)"
+    names(df)[names(df) == "Pointing direction"] <- "Pointing dir. (°)"
+    names(df)[names(df) == "Rotation angle"] <- "Rotation (°)"
+    names(df)[names(df) == "Final Answer"] <- "Final answer (°)"
     
     df
   }
@@ -2075,6 +2137,23 @@ server <- function(input, output, session) {
   ###########ENDS - HELPER FUNCTION FOR MAKING INFORMATION TEXT SHORTER THAT IS UPTO 2 LINES ONLY ON THE ALL TASKS MAIN TAB###########
   
   
+  ####helper starts - applying assignment column limit######
+  apply_assignment_display_limit <- function(df) {
+    if (is.null(df) || nrow(df) == 0) return(df)
+    if (!("Assignment" %in% names(df))) return(df)
+    
+    # Apply 2-line display limit to ALL assignment texts in dashboard only
+    df$Assignment <- assignment_two_line_html(df$Assignment, max_chars = 120)
+    
+    df
+  }
+  ####helper ends - applying assignment column limit######
+  
+  
+  
+  
+  
+  
   ######## MAKING HELPER FUNCTION FOR ADDING THE NEW DOWNLOAD BUTTON IN BIG TABLE 'SAVE ALL TO CSV' START #############
   pretty_task_type <- function(x) {
     x <- as.character(x)
@@ -2108,28 +2187,28 @@ server <- function(input, output, session) {
       Type = vapply(sm$task_type, pretty_task_type, character(1)),
       Assignment = clean_export_text(sm$assignment),
       Answer = clean_export_text(sm$answer_txt),
-      `Time(s)` = sm$time_s,
+      `Time (s)` = sm$time_s,
       Tries = sm$tries,
-      `Viewing direction` = format_bearing_deg(sm$viewing_direction),
-      `Final viewing direction` = format_bearing_deg(sm$final_viewing_direction),
-      `Pointing direction` = format_bearing_deg(sm$pointing_direction),
-      `Rotation angle` = format_angle_deg(sm$rotation_angle),
-      `Final Answer` = format_bearing_deg(sm$final_answer_direction),
+      `Viewing dir. (°)` = format_bearing_deg(sm$viewing_direction),
+      `Final view dir. (°)` = format_bearing_deg(sm$final_viewing_direction),
+      `Pointing dir. (°)` = format_bearing_deg(sm$pointing_direction),
+      `Rotation (°)` = format_angle_deg(sm$rotation_angle),
+      `Final answer (°)` = format_bearing_deg(sm$final_answer_direction),
       check.names = FALSE,
       stringsAsFactors = FALSE
     )
     
-    df[["Error in °/m"]] <- sm$error_txt
+    df[["Error (°/m)"]] <- sm$error_txt
     
     info_mask <- tolower(trimws(df$Type)) == "information"
     df$Answer[info_mask] <- NA_character_
     df$Tries[info_mask] <- 0
-    df[["Viewing direction"]][info_mask] <- NA_character_
-    df[["Final viewing direction"]][info_mask] <- NA_character_
-    df[["Pointing direction"]][info_mask] <- NA_character_
-    df[["Rotation angle"]][info_mask] <- NA_character_
-    df[["Final Answer"]][info_mask] <- NA_character_
-    df[["Error in °/m"]][info_mask] <- NA_character_
+    df[["Viewing dir. (°)"]][info_mask] <- NA_character_
+    df[["Final view dir. (°)"]][info_mask] <- NA_character_
+    df[["Pointing dir. (°)"]][info_mask] <- NA_character_
+    df[["Rotation (°)"]][info_mask] <- NA_character_
+    df[["Final answer (°)"]][info_mask] <- NA_character_
+    df[["Error (°/m)"]][info_mask] <- NA_character_
     
     # For Save All Players CSV: save only the visible shortened information text
     df <- apply_info_assignment_limit(df, html = FALSE)
@@ -2212,11 +2291,19 @@ server <- function(input, output, session) {
   ######Starts - Helper function for advanced direction analysis toggle buttons#####
   # ---- Advanced Direction Task Analysis toggle helpers ----
   advanced_direction_cols <- c(
+    # old internal names, still used by Compare Players before renaming
     "Viewing direction",
     "Final viewing direction",
     "Pointing direction",
     "Rotation angle",
-    "Final Answer"
+    "Final Answer",
+    
+    # new display/export names for All tasks
+    "Viewing dir. (°)",
+    "Final view dir. (°)",
+    "Pointing dir. (°)",
+    "Rotation (°)",
+    "Final answer (°)"
   )
   
   drop_advanced_direction_cols <- function(df) {
@@ -3444,14 +3531,14 @@ server <- function(input, output, session) {
       Type = vapply(sm$task_type, pretty_task_type, character(1)),
       Assignment = sm$assignment,
       Answer = sm$answer_txt,
-      `Time(s)` = sm$time_s,
+      `Time (s)` = sm$time_s,
       Tries = sm$tries,
-      `Viewing direction` = format_bearing_deg(sm$viewing_direction),
-      `Final viewing direction` = format_bearing_deg(sm$final_viewing_direction),
-      `Pointing direction` = format_bearing_deg(sm$pointing_direction),
-      `Rotation angle` = format_angle_deg(sm$rotation_angle),
-      `Final Answer` = format_bearing_deg(sm$final_answer_direction),
-      `Error in °/m` = sm$error_txt,
+      `Viewing dir. (°)` = format_bearing_deg(sm$viewing_direction),
+      `Final view dir. (°)` = format_bearing_deg(sm$final_viewing_direction),
+      `Pointing dir. (°)` = format_bearing_deg(sm$pointing_direction),
+      `Rotation (°)` = format_angle_deg(sm$rotation_angle),
+      `Final answer (°)` = format_bearing_deg(sm$final_answer_direction),
+      `Error (°/m)` = sm$error_txt,
       check.names = FALSE,
       stringsAsFactors = FALSE
     )
@@ -3459,14 +3546,14 @@ server <- function(input, output, session) {
     info_mask <- tolower(trimws(df$Type)) == "information"
     df$Answer[info_mask] <- NA_character_
     df$Tries[info_mask] <- 0
-    df[["Viewing direction"]][info_mask] <- NA_character_
-    df[["Final viewing direction"]][info_mask] <- NA_character_
-    df[["Pointing direction"]][info_mask] <- NA_character_
-    df[["Rotation angle"]][info_mask] <- NA_character_
-    df[["Final Answer"]][info_mask] <- NA_character_
-    df[["Error in °/m"]][info_mask] <- NA_character_
+    df[["Viewing dir. (°)"]][info_mask] <- NA_character_
+    df[["Final view dir. (°)"]][info_mask] <- NA_character_
+    df[["Pointing dir. (°)"]][info_mask] <- NA_character_
+    df[["Rotation (°)"]][info_mask] <- NA_character_
+    df[["Final answer (°)"]][info_mask] <- NA_character_
+    df[["Error (°/m)"]][info_mask] <- NA_character_
     # For dashboard display: show max 2-line information text, full text on hover
-    df <- apply_info_assignment_limit(df, html = TRUE)
+    df <- apply_assignment_display_limit(df)
     
     
     
@@ -3600,7 +3687,12 @@ server <- function(input, output, session) {
       DT::datatable(
         df_show,
         escape = setdiff(names(df_show), "Assignment"),
-        options = list(pageLength = 10, ordering = FALSE)
+        class = "compact stripe hover",
+        options = list(
+          pageLength = 10,
+          ordering = FALSE,
+          autoWidth = FALSE
+        )
       )
     })
     
@@ -5232,14 +5324,14 @@ server <- function(input, output, session) {
       Type = vapply(sm$task_type, pretty_task_type, character(1)),
       Assignment = sm$assignment,
       Answer = sm$answer_txt,
-      `Time(s)` = sm$time_s,
+      `Time (s)` = sm$time_s,
       Tries = sm$tries,
-      `Viewing direction` = format_bearing_deg(sm$viewing_direction),
-      `Final viewing direction` = format_bearing_deg(sm$final_viewing_direction),
-      `Pointing direction` = format_bearing_deg(sm$pointing_direction),
-      `Rotation angle` = format_angle_deg(sm$rotation_angle),
-      `Final Answer` = format_bearing_deg(sm$final_answer_direction),
-      `Error in °/m` = sm$error_txt,
+      `Viewing dir. (°)` = format_bearing_deg(sm$viewing_direction),
+      `Final view dir. (°)` = format_bearing_deg(sm$final_viewing_direction),
+      `Pointing dir. (°)` = format_bearing_deg(sm$pointing_direction),
+      `Rotation (°)` = format_angle_deg(sm$rotation_angle),
+      `Final answer (°)` = format_bearing_deg(sm$final_answer_direction),
+      `Error (°/m)` = sm$error_txt,
       check.names = FALSE,
       stringsAsFactors = FALSE
     )
@@ -5247,15 +5339,15 @@ server <- function(input, output, session) {
     info_mask <- tolower(trimws(df$Type)) == "information"
     df$Answer[info_mask] <- NA_character_
     df$Tries[info_mask] <- 0
-    df[["Viewing direction"]][info_mask] <- NA_character_
-    df[["Final viewing direction"]][info_mask] <- NA_character_
-    df[["Pointing direction"]][info_mask] <- NA_character_
-    df[["Rotation angle"]][info_mask] <- NA_character_
-    df[["Final Answer"]][info_mask] <- NA_character_
-    df[["Error in °/m"]][info_mask] <- NA_character_
+    df[["Viewing dir. (°)"]][info_mask] <- NA_character_
+    df[["Final view dir. (°)"]][info_mask] <- NA_character_
+    df[["Pointing dir. (°)"]][info_mask] <- NA_character_
+    df[["Rotation (°)"]][info_mask] <- NA_character_
+    df[["Final answer (°)"]][info_mask] <- NA_character_
+    df[["Error (°/m)"]][info_mask] <- NA_character_
     
     # For dashboard display: show max 2-line information text, full text on hover
-    df <- apply_info_assignment_limit(df, html = TRUE)
+    df <- apply_assignment_display_limit(df)
     
     
     
@@ -5384,7 +5476,12 @@ server <- function(input, output, session) {
       DT::datatable(
         df_show,
         escape = setdiff(names(df_show), "Assignment"),
-        options = list(pageLength = 10, ordering = FALSE)
+        class = "compact stripe hover",
+        options = list(
+          pageLength = 10,
+          ordering = FALSE,
+          autoWidth = FALSE
+        )
       )
     })
     
