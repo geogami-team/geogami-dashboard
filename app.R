@@ -1621,6 +1621,25 @@ server <- function(input, output, session) {
     sum(is.finite(lng[seq_len(n)]) & is.finite(lat[seq_len(n)])) >= 2
   }
   
+  has_object_map_geometry <- function(evts, block) {
+    any(vapply(block, function(i) {
+      task_type_i <- try(evts$task$type[i], silent = TRUE)
+      task_type_i <- if (inherits(task_type_i, "try-error") || is.null(task_type_i) || length(task_type_i) == 0) {
+        NA_character_
+      } else {
+        as.character(task_type_i[1])
+      }
+      
+      if (is.na(task_type_i) || task_type_i != "theme-object") {
+        return(FALSE)
+      }
+      
+      ring <- get_polygon_ring(evts, i)
+      !is.null(ring) && nrow(ring) >= 3
+    }, logical(1)))
+  }
+  
+  
   
   task_choice_styles <- function(track, n_tasks = NULL) {
     if (is.null(track) || is.null(track$events)) {
@@ -1684,16 +1703,23 @@ server <- function(input, output, session) {
         (!is.na(task_type) && task_type == "info")
       
       is_free_task <- !is.na(task_type) && task_type == "free"
+      is_object_task <- !is.na(task_type) && task_type == "theme-object"
       
       has_free_map_content <- FALSE
+      has_object_map_content <- FALSE
       
       if (is_free_task) {
         has_free_map_content <- has_free_drawing_points(evts, block) ||
           has_task_waypoints(track, k)
       }
       
+      if (is_object_task) {
+        has_object_map_content <- has_object_map_geometry(evts, block)
+      }
+      
       map_grey[k] <- is_info_task ||
-        (is_free_task && !has_free_map_content)
+        (is_free_task && !has_free_map_content) ||
+        (is_object_task && !has_object_map_content)
       
       # ----- Compare Players / Statistics tabs: grey where no meaningful output is produced -----
       is_info_task <- (!is.na(task_cat) && task_cat == "info") ||
@@ -3471,18 +3497,41 @@ server <- function(input, output, session) {
 
         
         
-        if (type_task[i] == "theme-object" && cou == num_value_num() && ans_type[[i]] == "MAP_POINT") { #tasks that show nothing on the map
-          poly <- sel_polygon[[i]]$geometry$coordinates[[1]]
-          for (n in 1:(length(poly)/2)) {
-            lng_poly <- append(lng_poly, poly[n])
-          }
-          for (n in (length(poly)/2+1):length(poly)) {
-            lat_poly <- append(lat_poly, poly[n])
-          }
+        if (!is.na(type_task[i]) && type_task[i] == "theme-object" && cou == num_value_num()) {
+          
+          # Always set task type for object-location tasks.
+          # This prevents "No task exists with this number" for MULTIPLE_CHOICE object tasks.
           t <- type_task[i]
-          if (type_task[i] == "theme-object" && (cou == num_value_num())) {
-            lng_ans_obj <- append(lng_ans_obj, targ[[i]][1])
-            lat_ans_obj <- append(lat_ans_obj, targ[[i]][2])
+          
+          ans_i <- if (!is.null(ans_type) && length(ans_type) >= i) {
+            as.character(ans_type[[i]])
+          } else {
+            NA_character_
+          }
+          
+          # Object-location tasks can have map geometry even when the answer is MULTIPLE_CHOICE.
+          # Example: "Wähle das passende Foto für den markierten Ort."
+          ring <- get_polygon_ring(data[[1]]$events, i)
+          
+          if (!is.null(ring) && nrow(ring) >= 3) {
+            lng_poly <- as.list(ring[, 1])
+            lat_poly <- as.list(ring[, 2])
+            mr <- FALSE
+          } else if (!is.na(ans_i) && ans_i %in% c("PHOTO", "MULTIPLE_CHOICE")) {
+            # If an object-photo / object-multiple-choice task has no geometry,
+            # then there is genuinely nothing useful to draw on the map.
+            mr <- TRUE
+          }
+          
+          # Only MAP_POINT object tasks have a clicked answer marker.
+          # MULTIPLE_CHOICE object tasks should show the marked polygon only.
+          if (!is.na(ans_i) && ans_i == "MAP_POINT") {
+            cp <- get_click_lonlat(data[[1]]$events, i)
+            
+            if (length(cp) == 2 && all(is.finite(cp))) {
+              lng_ans_obj <- append(lng_ans_obj, cp[1])
+              lat_ans_obj <- append(lat_ans_obj, cp[2])
+            }
           }
         }
         if ((type_task[i] == "free") && (cou == num_value_num()) && length(drawing_point_lat) != 0 && !is.na(drawing_point_lat[[i]]) && ans_type[[i]] == "DRAW") {
@@ -5270,18 +5319,41 @@ server <- function(input, output, session) {
 
         
         
-        if (type_task[i] == "theme-object" && cou == num_value_num() && ans_type[[i]] == "MAP_POINT") { #tasks that show nothing on the map
-          poly <- sel_polygon[[i]]$geometry$coordinates[[1]]
-          for (n in 1:(length(poly)/2)) {
-            lng_poly <- append(lng_poly, poly[n])
-          }
-          for (n in (length(poly)/2+1):length(poly)) {
-            lat_poly <- append(lat_poly, poly[n])
-          }
+        if (!is.na(type_task[i]) && type_task[i] == "theme-object" && cou == num_value_num()) {
+          
+          # Always set task type for object-location tasks.
+          # This prevents "No task exists with this number" for MULTIPLE_CHOICE object tasks.
           t <- type_task[i]
-          if (type_task[i] == "theme-object" && (cou == num_value_num())) {
-            lng_ans_obj <- append(lng_ans_obj, targ[[i]][1])
-            lat_ans_obj <- append(lat_ans_obj, targ[[i]][2])
+          
+          ans_i <- if (!is.null(ans_type) && length(ans_type) >= i) {
+            as.character(ans_type[[i]])
+          } else {
+            NA_character_
+          }
+          
+          # Object-location tasks can have map geometry even when the answer is MULTIPLE_CHOICE.
+          # Example: "Wähle das passende Foto für den markierten Ort."
+          ring <- get_polygon_ring(data[[1]]$events, i)
+          
+          if (!is.null(ring) && nrow(ring) >= 3) {
+            lng_poly <- as.list(ring[, 1])
+            lat_poly <- as.list(ring[, 2])
+            mr <- FALSE
+          } else if (!is.na(ans_i) && ans_i %in% c("PHOTO", "MULTIPLE_CHOICE")) {
+            # If an object-photo / object-multiple-choice task has no geometry,
+            # then there is genuinely nothing useful to draw on the map.
+            mr <- TRUE
+          }
+          
+          # Only MAP_POINT object tasks have a clicked answer marker.
+          # MULTIPLE_CHOICE object tasks should show the marked polygon only.
+          if (!is.na(ans_i) && ans_i == "MAP_POINT") {
+            cp <- get_click_lonlat(data[[1]]$events, i)
+            
+            if (length(cp) == 2 && all(is.finite(cp))) {
+              lng_ans_obj <- append(lng_ans_obj, cp[1])
+              lat_ans_obj <- append(lat_ans_obj, cp[2])
+            }
           }
         }
         if ((type_task[i] == "free") && (cou == num_value_num()) && length(drawing_point_lat) != 0 && !is.na(drawing_point_lat[[i]]) && ans_type[[i]] == "DRAW") {
