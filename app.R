@@ -1569,6 +1569,59 @@ server <- function(input, output, session) {
     !is.na(x) && nzchar(trimws(x))
   }
   
+  to_numeric_vector_safe <- function(x) {
+    if (is.null(x) || length(x) == 0) return(numeric(0))
+    x <- unlist(x, use.names = FALSE)
+    if (!length(x)) return(numeric(0))
+    if (is.character(x)) x <- gsub(",", ".", x, fixed = TRUE)
+    suppressWarnings(as.numeric(x))
+  }
+  
+  has_task_waypoints <- function(track, task_no) {
+    if (is.null(track) || is.null(track$waypoints)) return(FALSE)
+    
+    wps <- track$waypoints
+    
+    if (
+      is.null(wps$taskNo) ||
+      is.null(wps$position$coords$longitude) ||
+      is.null(wps$position$coords$latitude)
+    ) {
+      return(FALSE)
+    }
+    
+    task_no_all <- suppressWarnings(as.integer(unlist(wps$taskNo, use.names = FALSE)))
+    keep <- which(task_no_all == as.integer(task_no))
+    
+    if (!length(keep)) return(FALSE)
+    
+    lng <- to_numeric_vector_safe(wps$position$coords$longitude[keep])
+    lat <- to_numeric_vector_safe(wps$position$coords$latitude[keep])
+    
+    n <- min(length(lng), length(lat))
+    if (n < 2) return(FALSE)
+    
+    sum(is.finite(lng[seq_len(n)]) & is.finite(lat[seq_len(n)])) >= 2
+  }
+  
+  has_free_drawing_points <- function(evts, block) {
+    if (
+      is.null(evts$clickPosition$longitude) ||
+      is.null(evts$clickPosition$latitude)
+    ) {
+      return(FALSE)
+    }
+    
+    lng <- to_numeric_vector_safe(evts$clickPosition$longitude[block])
+    lat <- to_numeric_vector_safe(evts$clickPosition$latitude[block])
+    
+    n <- min(length(lng), length(lat))
+    if (n < 2) return(FALSE)
+    
+    sum(is.finite(lng[seq_len(n)]) & is.finite(lat[seq_len(n)])) >= 2
+  }
+  
+  
   task_choice_styles <- function(track, n_tasks = NULL) {
     if (is.null(track) || is.null(track$events)) {
       return(list(
@@ -1626,9 +1679,21 @@ server <- function(input, output, session) {
         as.character(task_type[1])
       }
       
-      # ----- Map tab: grey if information task OR free task -----
-      map_grey[k] <- (!is.na(task_cat) && task_cat == "info") ||
-        (!is.na(task_type) && task_type == "free")
+      # ----- Map tab: grey only if there is no useful map content -----
+      is_info_task <- (!is.na(task_cat) && task_cat == "info") ||
+        (!is.na(task_type) && task_type == "info")
+      
+      is_free_task <- !is.na(task_type) && task_type == "free"
+      
+      has_free_map_content <- FALSE
+      
+      if (is_free_task) {
+        has_free_map_content <- has_free_drawing_points(evts, block) ||
+          has_task_waypoints(track, k)
+      }
+      
+      map_grey[k] <- is_info_task ||
+        (is_free_task && !has_free_map_content)
       
       # ----- Compare Players / Statistics tabs: grey where no meaningful output is produced -----
       is_info_task <- (!is.na(task_cat) && task_cat == "info") ||
