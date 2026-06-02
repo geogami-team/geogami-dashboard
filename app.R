@@ -4210,17 +4210,20 @@ server <- function(input, output, session) {
             )
         }
         
-        if (length(dr_point_lng) != 0) {
+        if (
+          length(dr_point_lng) >= 2 &&
+          length(dr_point_lat) >= 2 &&
+          length(dr_point_lng) == length(dr_point_lat)
+        ) {
           map_shown <- leaflet() %>%
             addTiles() %>%
             addPolylines(
-              lng = unlist(traj_lng),
-              lat = unlist(traj_lat),
+              lng = dr_point_lng,
+              lat = dr_point_lat,
               color = "red",
               weight = 2,
               opacity = 1,
-              stroke = TRUE,
-              group = REFERENCE_BASE_TRAJ_GROUP
+              stroke = TRUE
             )
         }
         
@@ -5870,17 +5873,20 @@ server <- function(input, output, session) {
             )
         }
         
-        if (length(dr_point_lng) != 0) {
+        if (
+          length(dr_point_lng) >= 2 &&
+          length(dr_point_lat) >= 2 &&
+          length(dr_point_lng) == length(dr_point_lat)
+        ) {
           map_shown <- leaflet() %>%
             addTiles() %>%
             addPolylines(
-              lng = unlist(traj_lng),
-              lat = unlist(traj_lat),
+              lng = dr_point_lng,
+              lat = dr_point_lat,
               color = "red",
               weight = 2,
               opacity = 1,
-              stroke = TRUE,
-              group = REFERENCE_BASE_TRAJ_GROUP
+              stroke = TRUE
             )
         }
         
