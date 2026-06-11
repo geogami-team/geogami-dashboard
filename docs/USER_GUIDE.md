@@ -49,7 +49,7 @@ After picking a game, this dropdown lists every track session (one per player ru
 
 - Choose one or more sessions to load their data into the main-panel tabs.
 - Until you load at least one session, the right-hand tabs stay empty.
-- **Download** button: exports the selected JSON track files as a zip.
+- **Download** button: exports the selected JSON track files as a zip. The structure of these files is documented field by field in the [Track Data Reference](https://github.com/geogami-team/geogami-docs/blob/HEAD/TRACK_DATA_REFERENCE.md).
 
 > ℹ️ **Note about task numbers:** unlike older versions, there is no longer a single "task number" field in the sidebar. Each tab that needs a task selection has its own **Selected Tasks** picker at the top, so you can compare different tasks across tabs without losing your place.
 

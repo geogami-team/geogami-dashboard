@@ -24,7 +24,8 @@ The GeoGami Dashboard is an **R Shiny** application used by game creators, schol
 > Companion projects:
 > - **Front-end UI**: [`../geogami-ui`](https://github.com/geogami-team/geogami)
 > - **Backend API**: [`../geogami-server`](https://github.com/geogami-team/origami-backend)
-> - **Virtual environment**: [`../geogami-virtual-environment-dev`](https://github.com/geogami-team/geogami-virtual-environment-dev)(../geogami-virtual-environment-dev)
+> - **Virtual environment**: [`../geogami-virtual-environment-dev`](https://github.com/geogami-team/geogami-virtual-environment-dev)
+> - **Platform documentation**: [`geogami-docs`](https://github.com/geogami-team/geogami-docs) — including the [Track Data Reference](https://github.com/geogami-team/geogami-docs/blob/HEAD/TRACK_DATA_REFERENCE.md) describing the JSON files this dashboard works with
 
 ---
 
@@ -104,6 +105,8 @@ Change this when running against a local server during development.
 ## User guide
 
 End-user walkthrough of the sidebar and the five main-panel tabs (All tasks, Map, Pictures, Compare Players, Statistics) — including the **share game tracks** flow — lives in [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
+
+Analyzing the exported track JSON files yourself (R, Python, …)? The complete field-by-field format documentation is the [Track Data Reference](https://github.com/geogami-team/geogami-docs/blob/HEAD/TRACK_DATA_REFERENCE.md) in `geogami-docs`.
 
 ## Project layout
 
