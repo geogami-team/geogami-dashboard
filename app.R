@@ -2550,42 +2550,45 @@ server <- function(input, output, session) {
   observe({
     req(accessToken_rv())
     req(apiURL_rv())
-    
-    apiUrl <- paste0(apiURL_rv(), "/game/usergames")
-    games_data <- fetch_games_data_from_server(apiUrl, accessToken_rv())
-    
-    if (is.null(games_data) || NROW(games_data) == 0) {
-      games_choices_rv(setNames(character(0), character(0)))
-      updatePickerInput(session, "selected_games", choices = character(0), selected = character(0))
-      output$info_download <- renderText({ "" })
-      return()
-    }
-    
-    games_df <- as.data.frame(games_data, stringsAsFactors = FALSE)
-    
-    # --- NEW: derive created time from Mongo _id and sort newest first ---
-    if ("_id" %in% names(games_df)) {
-      games_df$created_dt <- mongo_objectid_time(games_df[["_id"]])
-      games_df <- games_df[order(games_df$created_dt, decreasing = TRUE), , drop = FALSE]
-    }
-    
-    # Build picker choices (label=name, value=id) in this sorted order
-    mapping <- setNames(games_df[["_id"]], games_df$name)
-    games_choices_rv(mapping)
-    
-    # Optional: force newest as default if you want
-    # selected_val <- games_df[["_id"]][1]
-    # Otherwise: preserve current selection if still valid
-    cur <- isolate(input$selected_games)
-    selected_val <- if (!is.null(cur) && cur %in% mapping) cur else games_df[["_id"]][1]
-    
-    updatePickerInput(session, "selected_games", choices = mapping, selected = selected_val)
-    
-    # Debug print to confirm ordering
-    message("=== Games (newest -> oldest) ===")
-    print(games_df[, c("name", "_id", "created_dt")], row.names = FALSE)
-    
-    output$info_download <- renderText({ "" })
+
+    # Progress bar shown while the games list loads; auto-closes when the
+    # block finishes (i.e. once the picker is populated).
+    withProgress(message = "Loading games…", value = 0.2, {
+      apiUrl <- paste0(apiURL_rv(), "/game/usergames")
+      games_data <- fetch_games_data_from_server(apiUrl, accessToken_rv())
+      setProgress(0.7)
+
+      if (is.null(games_data) || NROW(games_data) == 0) {
+        games_choices_rv(setNames(character(0), character(0)))
+        updatePickerInput(session, "selected_games", choices = character(0), selected = character(0))
+        output$info_download <- renderText({ "" })
+      } else {
+        games_df <- as.data.frame(games_data, stringsAsFactors = FALSE)
+
+        # --- derive created time from Mongo _id and sort newest first ---
+        if ("_id" %in% names(games_df)) {
+          games_df$created_dt <- mongo_objectid_time(games_df[["_id"]])
+          games_df <- games_df[order(games_df$created_dt, decreasing = TRUE), , drop = FALSE]
+        }
+
+        # Build picker choices (label=name, value=id) in this sorted order
+        mapping <- setNames(games_df[["_id"]], games_df$name)
+        games_choices_rv(mapping)
+
+        # Preserve current selection if still valid, else default to newest
+        cur <- isolate(input$selected_games)
+        selected_val <- if (!is.null(cur) && cur %in% mapping) cur else games_df[["_id"]][1]
+
+        updatePickerInput(session, "selected_games", choices = mapping, selected = selected_val)
+
+        # Debug print to confirm ordering
+        message("=== Games (newest -> oldest) ===")
+        print(games_df[, c("name", "_id", "created_dt")], row.names = FALSE)
+
+        output$info_download <- renderText({ "" })
+      }
+      setProgress(1)
+    })
   })
   
   #############---------------LOADING GAMES END (NEWEST ON TOP)-----################
