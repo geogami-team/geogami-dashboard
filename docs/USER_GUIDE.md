@@ -53,6 +53,15 @@ After picking a game, this dropdown lists every track session (one per player ru
 
 > ℹ️ **Note about task numbers:** unlike older versions, there is no longer a single "task number" field in the sidebar. Each tab that needs a task selection has its own **Selected Tasks** picker at the top, so you can compare different tasks across tabs without losing your place.
 
+### 6. Share a single track
+*Button appears once **exactly one** track is selected in **Select the players**.*
+
+- Opens a dialog to grant or revoke access to **that one track** for other GeoGami users by email — independent of the whole game.
+- Same validation as game sharing: the server rejects the track owner's own email and addresses with no GeoGami account.
+- Recipients see the game (with just that track) in their own dashboard the next time they open it.
+- The track's owner is its **instructor** for class plays, otherwise the game creator; only the owner or an admin can manage the share.
+- Backing endpoints: `POST /track/:id/share`, `DELETE /track/:id/share`, `GET /track/:id/share`.
+
 ---
 
 ## 📊 Main panel
