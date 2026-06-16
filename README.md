@@ -16,10 +16,11 @@
 
 The GeoGami Dashboard is an **R Shiny** application used by game creators, scholars, and admins to:
 
-- Browse the games they have access to (their own + games **shared** with them)
+- Browse the games they have access to (their own, games **shared** with them, games they instruct via a class QR, or games containing a track shared with them)
 - View track sessions for each game and inspect tasks, answers, photos, and a Leaflet map of the route
 - Export evaluation data and track maps
 - Grant or revoke access to a game's tracks for other GeoGami users (by email)
+- Share — or revoke — a **single track** with another user, independently of the whole game (by email)
 
 > Companion projects:
 > - **Front-end UI**: [`../geogami-ui`](https://github.com/geogami-team/geogami)
@@ -104,7 +105,7 @@ Change this when running against a local server during development.
 
 ## User guide
 
-End-user walkthrough of the sidebar and the five main-panel tabs (All tasks, Map, Pictures, Compare Players, Statistics) — including the **share game tracks** flow — lives in [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
+End-user walkthrough of the sidebar and the five main-panel tabs (All tasks, Map, Pictures, Compare Players, Statistics) — including the **share game tracks** flow and the per-track **"Share this track"** button (shown when a single track is selected) — lives in [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
 
 Analyzing the exported track JSON files yourself (R, Python, …)? The complete field-by-field format documentation is the [Track Data Reference](https://github.com/geogami-team/geogami-docs/blob/HEAD/TRACK_DATA_REFERENCE.md) in `geogami-docs`.
 

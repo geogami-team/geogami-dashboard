@@ -521,7 +521,9 @@ ui <- page_sidebar(
           ),
           #actionButton("reset", "Reset", icon = icon("refresh"), style = "width:150px; margin-top: 10px; margin-bottom: 15px; margin-right: 15px"),
           textOutput("info_download"),
-          downloadButton("download_json", "Download", icon = icon("download"), style = "width:150px; margin-top: 10px; margin-bottom: 15px;")
+          downloadButton("download_json", "Download", icon = icon("download"), style = "width:150px; margin-top: 10px; margin-bottom: 15px;"),
+          # Per-track share button — appears when exactly one track is selected.
+          uiOutput("share_track_button_ui")
       )
     ),
     
@@ -6831,6 +6833,153 @@ server <- function(input, output, session) {
 
         if (result$status == 200) {
           shared_emails_rv(result$data$sharedWith)
+          showNotification(paste0("Removed ", email_to_remove), type = "message")
+        } else {
+          showNotification("Could not remove user.", type = "error")
+        }
+      }, ignoreInit = TRUE, once = TRUE)
+    })
+  })
+
+
+  # ── Share a single track ───────────────────────────────────────────
+  # Mirrors the game-share flow above, but targets one specific track via
+  # /track/:id/share. The server resolves the track owner (instructor for
+  # class plays, otherwise the game creator); only the owner or an admin can
+  # manage sharing. selected_files is a multi-select picker, so the button is
+  # only offered when exactly one track is selected.
+
+  # Current shared-with emails for the selected track.
+  track_shared_emails_rv <- reactiveVal(character(0))
+
+  # Show the button only when exactly one track is selected.
+  output$share_track_button_ui <- renderUI({
+    req(input$selected_files)
+    if (length(input$selected_files) > 1) {
+      return(p(style = "color: #888; margin-top: 10px;",
+               "Select a single track to share it."))
+    }
+    div(
+      style = "margin-top: 10px;",
+      actionButton("open_share_track_modal", "Share this track",
+                   icon = icon("share-alt"),
+                   style = "width: 150px;")
+    )
+  })
+
+  # Open the modal: fetch who this track is already shared with.
+  observeEvent(input$open_share_track_modal, {
+    req(input$selected_files, accessToken_rv(), apiURL_rv())
+
+    track_id <- input$selected_files[1]
+    url <- paste0(apiURL_rv(), "/track/", track_id, "/share")
+    result <- api_get(url, accessToken_rv())
+
+    if (result$status == 200 && !is.null(result$data$sharedWith)) {
+      track_shared_emails_rv(result$data$sharedWith)
+    } else {
+      track_shared_emails_rv(character(0))
+    }
+
+    showModal(modalDialog(
+      title = "Share this track",
+      size = "m",
+      easyClose = TRUE,
+
+      p("Grant other GeoGami users access to view this single track by entering their email."),
+
+      div(
+        style = "display: flex; gap: 8px; align-items: flex-end;",
+        div(style = "flex: 1;",
+            textInput("share_track_email_input", "Email address:", placeholder = "user@example.com")
+        ),
+        actionButton("share_track_add_btn", "Share", icon = icon("plus"),
+                     class = "btn-primary", style = "margin-bottom: 15px;")
+      ),
+
+      uiOutput("shared_track_list_ui"),
+
+      footer = modalButton("Close")
+    ))
+  })
+
+  # Render the list of emails this track is currently shared with.
+  output$shared_track_list_ui <- renderUI({
+    emails <- track_shared_emails_rv()
+    if (length(emails) == 0) {
+      return(p(style = "color: #888;", "Not shared with anyone yet."))
+    }
+
+    tags$div(
+      tags$h6(paste0("Shared with (", length(emails), "):")),
+      tags$ul(
+        style = "list-style: none; padding-left: 0;",
+        lapply(seq_along(emails), function(i) {
+          tags$li(
+            style = "display: flex; align-items: center; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #eee;",
+            tags$span(emails[i]),
+            actionButton(
+              inputId = paste0("remove_track_share_", i),
+              label = NULL,
+              icon = icon("times"),
+              class = "btn-sm btn-outline-danger",
+              style = "padding: 2px 8px;"
+            )
+          )
+        })
+      )
+    )
+  })
+
+  # Handle the "Share" button click: validate email, POST to server.
+  observeEvent(input$share_track_add_btn, {
+    req(input$selected_files, accessToken_rv(), apiURL_rv())
+
+    email <- trimws(tolower(input$share_track_email_input))
+    if (!grepl("@", email)) {
+      showNotification("Please enter a valid email address.", type = "warning")
+      return()
+    }
+
+    track_id <- input$selected_files[1]
+    url <- paste0(apiURL_rv(), "/track/", track_id, "/share")
+
+    result <- api_request(url, accessToken_rv(), body = list(emails = list(email)), method = "POST")
+
+    # Use the server's message verbatim (it explains which emails were added,
+    # skipped because they're the owner, or rejected because no account exists).
+    server_msg <- if (!is.null(result$data$message)) result$data$message else ""
+
+    if (result$status == 200) {
+      track_shared_emails_rv(result$data$sharedWith)
+      updateTextInput(session, "share_track_email_input", value = "")
+      msg <- if (nzchar(server_msg)) server_msg else paste0("Shared with ", email)
+      showNotification(msg, type = "message", duration = 6)
+    } else if (result$status == 400 && nzchar(server_msg)) {
+      showNotification(server_msg, type = "warning", duration = 8)
+    } else {
+      msg <- if (nzchar(server_msg)) server_msg else "Could not share."
+      showNotification(msg, type = "error")
+    }
+  })
+
+  # Per-email "X" revoke buttons: DELETE /track/:id/share.
+  observe({
+    emails <- track_shared_emails_rv()
+    lapply(seq_along(emails), function(i) {
+      btn_id <- paste0("remove_track_share_", i)
+      observeEvent(input[[btn_id]], {
+        req(input$selected_files, accessToken_rv(), apiURL_rv())
+
+        email_to_remove <- emails[i]
+        track_id <- input$selected_files[1]
+        url <- paste0(apiURL_rv(), "/track/", track_id, "/share")
+        result <- api_request(url, accessToken_rv(),
+                              body = list(emails = list(email_to_remove)),
+                              method = "DELETE")
+
+        if (result$status == 200) {
+          track_shared_emails_rv(result$data$sharedWith)
           showNotification(paste0("Removed ", email_to_remove), type = "message")
         } else {
           showNotification("Could not remove user.", type = "error")
