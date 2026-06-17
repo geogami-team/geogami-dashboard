@@ -4116,13 +4116,12 @@ server <- function(input, output, session) {
           map_shown <- leaflet() %>%
             addTiles() %>%
             addPolylines(
-              lng = unlist(traj_lng),
-              lat = unlist(traj_lat),
+              lng = unlist(dr_point_lng),
+              lat = unlist(dr_point_lat),
               color = "red",
               weight = 2,
               opacity = 1,
-              stroke = TRUE,
-              group = REFERENCE_BASE_TRAJ_GROUP
+              stroke = TRUE
             )
         }
         
@@ -5766,13 +5765,12 @@ server <- function(input, output, session) {
           map_shown <- leaflet() %>%
             addTiles() %>%
             addPolylines(
-              lng = unlist(traj_lng),
-              lat = unlist(traj_lat),
+              lng = unlist(dr_point_lng),
+              lat = unlist(dr_point_lat),
               color = "red",
               weight = 2,
               opacity = 1,
-              stroke = TRUE,
-              group = REFERENCE_BASE_TRAJ_GROUP
+              stroke = TRUE
             )
         }
         
