@@ -16,6 +16,46 @@ iris$Species <- NULL
 # Define the directory where JSON files are stored
 json_dir <- getwd()  # or set to your specific directory, e.g., "data/json"
 
+# Render a stored free-DRAW FeatureCollection onto a leaflet map, dispatching by
+# geometry type. `feats` is events$answer$drawing$features[[okIdx]] as parsed by
+# jsonlite (a data.frame with $type and a nested $geometry frame). Point coords
+# parse as c(lng,lat); LineString as an N x 2 matrix; Polygon as a 1 x N x 2
+# array (only the exterior ring is drawn).
+add_drawing_features <- function(map, feats) {
+  if (is.null(feats) || is.null(feats$geometry) || !length(feats$geometry$type)) {
+    return(map)
+  }
+  for (i in seq_along(feats$geometry$type)) {
+    gtype  <- feats$geometry$type[i]
+    coords <- feats$geometry$coordinates[[i]]
+    if (is.null(coords)) next
+
+    if (gtype == "Point") {
+      map <- map %>% addCircleMarkers(
+        lng = coords[1], lat = coords[2],
+        radius = 5, color = "red", fillColor = "red",
+        fillOpacity = 1, opacity = 1, weight = 2
+      )
+    } else if (gtype == "LineString") {
+      cm <- matrix(coords, ncol = 2)
+      map <- map %>% addPolylines(
+        lng = cm[, 1], lat = cm[, 2],
+        color = "red", weight = 2, opacity = 1, stroke = TRUE
+      )
+    } else if (gtype == "Polygon") {
+      # exterior ring; coords is a [ring x point x lng/lat] array
+      lng <- coords[1, , 1]
+      lat <- coords[1, , 2]
+      map <- map %>% addPolygons(
+        lng = lng, lat = lat,
+        color = "red", fillColor = "red", fillOpacity = 0.2,
+        weight = 2, opacity = 1
+      )
+    }
+  }
+  map
+}
+
 # Function to fetch/load list of user games / games that user has access to their tracks
 fetch_games_data_from_server <- function(url, token) {
   message("Fetched data, now processing...")
@@ -3217,7 +3257,14 @@ server <- function(input, output, session) {
     drawing_point_lat <- data[[1]]$events$clickPosition$latitude
     drawing_point_lng <- data[[1]]$events$clickPosition$longitude
     #print(drawing_point_lat)
-    
+
+    # Final stored drawing geometry (GeoJSON FeatureCollection persisted on the
+    # ON_OK_CLICKED answer for free DRAW tasks). Preferred over the raw click
+    # stream when present; falls back to clicks for older tracks.
+    drawing_feats <- NULL
+    has_drawing_col <- !is.null(data[[1]]$events$answer) &&
+      "drawing" %in% names(data[[1]]$events$answer)
+
     type_task <- data[[1]]$events$task$type
     cat_task <- data[[1]]$events$task$category
     accuracy_radius <- data[[1]]$events$task$settings$accuracy #For theme-loc or navigation tasks
@@ -3340,7 +3387,15 @@ server <- function(input, output, session) {
           mr <- TRUE
           t <- type_task[i]
         }
-        
+        # Capture the final stored drawing geometry for the selected DRAW task.
+        if (has_drawing_col && (type_task[i] == "free") && (cou == num_value_num()) &&
+            ans_type[[i]] == "DRAW" && ev[i] == "ON_OK_CLICKED") {
+          feats_i <- try(data[[1]]$events$answer$drawing$features[[i]], silent = TRUE)
+          if (!inherits(feats_i, "try-error") && is.data.frame(feats_i) && nrow(feats_i) > 0) {
+            drawing_feats <- feats_i
+          }
+        }
+
       }
       if (is.na(type_task[i]) && (i != 1) && (cou == num_value_num())) { #na task
         mr <- TRUE
@@ -3968,11 +4023,15 @@ server <- function(input, output, session) {
           )
       }
     }
-    if (length(dr_point_lng) != 0) {
+    if (length(dr_point_lng) != 0 || !is.null(drawing_feats)) {
       map_shown <- {
-        leaflet() %>%
-          addTiles() %>%
-          addPolylines(lng = unlist(dr_point_lng), lat = unlist(dr_point_lat), color = "red", weight = 2, opacity = 1, stroke = TRUE)
+        m <- leaflet() %>% addTiles()
+        if (!is.null(drawing_feats)) {
+          m <- add_drawing_features(m, drawing_feats)
+        } else {
+          m <- m %>% addPolylines(lng = unlist(dr_point_lng), lat = unlist(dr_point_lat), color = "red", weight = 2, opacity = 1, stroke = TRUE)
+        }
+        m
       }
     }
     if (length(lng_targ) != 0 && length(lng_true) != 0) {
@@ -4112,20 +4171,23 @@ server <- function(input, output, session) {
             )
         }
         
-        if (length(dr_point_lng) != 0) {
-          map_shown <- leaflet() %>%
-            addTiles() %>%
-            addPolylines(
-              lng = unlist(traj_lng),
-              lat = unlist(traj_lat),
-              color = "red",
-              weight = 2,
-              opacity = 1,
-              stroke = TRUE,
-              group = REFERENCE_BASE_TRAJ_GROUP
-            )
+        if (length(dr_point_lng) != 0 || !is.null(drawing_feats)) {
+          map_shown <- leaflet() %>% addTiles()
+          if (!is.null(drawing_feats)) {
+            map_shown <- add_drawing_features(map_shown, drawing_feats)
+          } else {
+            map_shown <- map_shown %>%
+              addPolylines(
+                lng = unlist(dr_point_lng),
+                lat = unlist(dr_point_lat),
+                color = "red",
+                weight = 2,
+                opacity = 1,
+                stroke = TRUE
+              )
+          }
         }
-        
+
         if (length(lng_targ) != 0 && length(lng_true) != 0) {
           map_shown <- leaflet() %>%
             addTiles() %>%
@@ -5003,7 +5065,14 @@ server <- function(input, output, session) {
     drawing_point_lat <- data[[1]]$events$clickPosition$latitude
     drawing_point_lng <- data[[1]]$events$clickPosition$longitude
     #print(drawing_point_lat)
-    
+
+    # Final stored drawing geometry (GeoJSON FeatureCollection persisted on the
+    # ON_OK_CLICKED answer for free DRAW tasks). Preferred over the raw click
+    # stream when present; falls back to clicks for older tracks.
+    drawing_feats <- NULL
+    has_drawing_col <- !is.null(data[[1]]$events$answer) &&
+      "drawing" %in% names(data[[1]]$events$answer)
+
     type_task <- data[[1]]$events$task$type
     cat_task <- data[[1]]$events$task$category
     accuracy_radius <- data[[1]]$events$task$settings$accuracy #For theme-loc or navigation tasks
@@ -5620,11 +5689,15 @@ server <- function(input, output, session) {
           )
       }
     }
-    if (length(dr_point_lng) != 0) {
+    if (length(dr_point_lng) != 0 || !is.null(drawing_feats)) {
       map_shown <- {
-        leaflet() %>%
-          addTiles() %>%
-          addPolylines(lng = unlist(dr_point_lng), lat = unlist(dr_point_lat), color = "red", weight = 2, opacity = 1, stroke = TRUE)
+        m <- leaflet() %>% addTiles()
+        if (!is.null(drawing_feats)) {
+          m <- add_drawing_features(m, drawing_feats)
+        } else {
+          m <- m %>% addPolylines(lng = unlist(dr_point_lng), lat = unlist(dr_point_lat), color = "red", weight = 2, opacity = 1, stroke = TRUE)
+        }
+        m
       }
     }
     if (length(lng_targ) != 0 && length(lng_true) != 0) {
@@ -5762,20 +5835,23 @@ server <- function(input, output, session) {
             )
         }
         
-        if (length(dr_point_lng) != 0) {
-          map_shown <- leaflet() %>%
-            addTiles() %>%
-            addPolylines(
-              lng = unlist(traj_lng),
-              lat = unlist(traj_lat),
-              color = "red",
-              weight = 2,
-              opacity = 1,
-              stroke = TRUE,
-              group = REFERENCE_BASE_TRAJ_GROUP
-            )
+        if (length(dr_point_lng) != 0 || !is.null(drawing_feats)) {
+          map_shown <- leaflet() %>% addTiles()
+          if (!is.null(drawing_feats)) {
+            map_shown <- add_drawing_features(map_shown, drawing_feats)
+          } else {
+            map_shown <- map_shown %>%
+              addPolylines(
+                lng = unlist(dr_point_lng),
+                lat = unlist(dr_point_lat),
+                color = "red",
+                weight = 2,
+                opacity = 1,
+                stroke = TRUE
+              )
+          }
         }
-        
+
         if (length(lng_targ) != 0 && length(lng_true) != 0) {
           map_shown <- leaflet() %>%
             addTiles() %>%
