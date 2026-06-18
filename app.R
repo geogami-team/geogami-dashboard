@@ -16,6 +16,46 @@ iris$Species <- NULL
 # Define the directory where JSON files are stored
 json_dir <- getwd()  # or set to your specific directory, e.g., "data/json"
 
+# Render a stored free-DRAW FeatureCollection onto a leaflet map, dispatching by
+# geometry type. `feats` is events$answer$drawing$features[[okIdx]] as parsed by
+# jsonlite (a data.frame with $type and a nested $geometry frame). Point coords
+# parse as c(lng,lat); LineString as an N x 2 matrix; Polygon as a 1 x N x 2
+# array (only the exterior ring is drawn).
+add_drawing_features <- function(map, feats) {
+  if (is.null(feats) || is.null(feats$geometry) || !length(feats$geometry$type)) {
+    return(map)
+  }
+  for (i in seq_along(feats$geometry$type)) {
+    gtype  <- feats$geometry$type[i]
+    coords <- feats$geometry$coordinates[[i]]
+    if (is.null(coords)) next
+
+    if (gtype == "Point") {
+      map <- map %>% addCircleMarkers(
+        lng = coords[1], lat = coords[2],
+        radius = 5, color = "red", fillColor = "red",
+        fillOpacity = 1, opacity = 1, weight = 2
+      )
+    } else if (gtype == "LineString") {
+      cm <- matrix(coords, ncol = 2)
+      map <- map %>% addPolylines(
+        lng = cm[, 1], lat = cm[, 2],
+        color = "red", weight = 2, opacity = 1, stroke = TRUE
+      )
+    } else if (gtype == "Polygon") {
+      # exterior ring; coords is a [ring x point x lng/lat] array
+      lng <- coords[1, , 1]
+      lat <- coords[1, , 2]
+      map <- map %>% addPolygons(
+        lng = lng, lat = lat,
+        color = "red", fillColor = "red", fillOpacity = 0.2,
+        weight = 2, opacity = 1
+      )
+    }
+  }
+  map
+}
+
 # Function to fetch/load list of user games / games that user has access to their tracks
 fetch_games_data_from_server <- function(url, token) {
   message("Fetched data, now processing...")
@@ -577,7 +617,9 @@ ui <- page_sidebar(
           ),
           #actionButton("reset", "Reset", icon = icon("refresh"), style = "width:150px; margin-top: 10px; margin-bottom: 15px; margin-right: 15px"),
           textOutput("info_download"),
-          downloadButton("download_json", "Download", icon = icon("download"), style = "width:150px; margin-top: 10px; margin-bottom: 15px;")
+          downloadButton("download_json", "Download", icon = icon("download"), style = "width:150px; margin-top: 10px; margin-bottom: 15px;"),
+          # Per-track share button — appears when exactly one track is selected.
+          uiOutput("share_track_button_ui")
       )
     ),
     
@@ -2737,42 +2779,45 @@ server <- function(input, output, session) {
   observe({
     req(accessToken_rv())
     req(apiURL_rv())
-    
-    apiUrl <- paste0(apiURL_rv(), "/game/usergames")
-    games_data <- fetch_games_data_from_server(apiUrl, accessToken_rv())
-    
-    if (is.null(games_data) || NROW(games_data) == 0) {
-      games_choices_rv(setNames(character(0), character(0)))
-      updatePickerInput(session, "selected_games", choices = character(0), selected = character(0))
-      output$info_download <- renderText({ "" })
-      return()
-    }
-    
-    games_df <- as.data.frame(games_data, stringsAsFactors = FALSE)
-    
-    # --- NEW: derive created time from Mongo _id and sort newest first ---
-    if ("_id" %in% names(games_df)) {
-      games_df$created_dt <- mongo_objectid_time(games_df[["_id"]])
-      games_df <- games_df[order(games_df$created_dt, decreasing = TRUE), , drop = FALSE]
-    }
-    
-    # Build picker choices (label=name, value=id) in this sorted order
-    mapping <- setNames(games_df[["_id"]], games_df$name)
-    games_choices_rv(mapping)
-    
-    # Optional: force newest as default if you want
-    # selected_val <- games_df[["_id"]][1]
-    # Otherwise: preserve current selection if still valid
-    cur <- isolate(input$selected_games)
-    selected_val <- if (!is.null(cur) && cur %in% mapping) cur else games_df[["_id"]][1]
-    
-    updatePickerInput(session, "selected_games", choices = mapping, selected = selected_val)
-    
-    # Debug print to confirm ordering
-    message("=== Games (newest -> oldest) ===")
-    print(games_df[, c("name", "_id", "created_dt")], row.names = FALSE)
-    
-    output$info_download <- renderText({ "" })
+
+    # Progress bar shown while the games list loads; auto-closes when the
+    # block finishes (i.e. once the picker is populated).
+    withProgress(message = "Loading games…", value = 0.2, {
+      apiUrl <- paste0(apiURL_rv(), "/game/usergames")
+      games_data <- fetch_games_data_from_server(apiUrl, accessToken_rv())
+      setProgress(0.7)
+
+      if (is.null(games_data) || NROW(games_data) == 0) {
+        games_choices_rv(setNames(character(0), character(0)))
+        updatePickerInput(session, "selected_games", choices = character(0), selected = character(0))
+        output$info_download <- renderText({ "" })
+      } else {
+        games_df <- as.data.frame(games_data, stringsAsFactors = FALSE)
+
+        # --- derive created time from Mongo _id and sort newest first ---
+        if ("_id" %in% names(games_df)) {
+          games_df$created_dt <- mongo_objectid_time(games_df[["_id"]])
+          games_df <- games_df[order(games_df$created_dt, decreasing = TRUE), , drop = FALSE]
+        }
+
+        # Build picker choices (label=name, value=id) in this sorted order
+        mapping <- setNames(games_df[["_id"]], games_df$name)
+        games_choices_rv(mapping)
+
+        # Preserve current selection if still valid, else default to newest
+        cur <- isolate(input$selected_games)
+        selected_val <- if (!is.null(cur) && cur %in% mapping) cur else games_df[["_id"]][1]
+
+        updatePickerInput(session, "selected_games", choices = mapping, selected = selected_val)
+
+        # Debug print to confirm ordering
+        message("=== Games (newest -> oldest) ===")
+        print(games_df[, c("name", "_id", "created_dt")], row.names = FALSE)
+
+        output$info_download <- renderText({ "" })
+      }
+      setProgress(1)
+    })
   })
   
   #############---------------LOADING GAMES END (NEWEST ON TOP)-----################
@@ -3401,7 +3446,14 @@ server <- function(input, output, session) {
     drawing_point_lat <- data[[1]]$events$clickPosition$latitude
     drawing_point_lng <- data[[1]]$events$clickPosition$longitude
     #print(drawing_point_lat)
-    
+
+    # Final stored drawing geometry (GeoJSON FeatureCollection persisted on the
+    # ON_OK_CLICKED answer for free DRAW tasks). Preferred over the raw click
+    # stream when present; falls back to clicks for older tracks.
+    drawing_feats <- NULL
+    has_drawing_col <- !is.null(data[[1]]$events$answer) &&
+      "drawing" %in% names(data[[1]]$events$answer)
+
     type_task <- data[[1]]$events$task$type
     cat_task <- data[[1]]$events$task$category
     accuracy_radius <- data[[1]]$events$task$settings$accuracy #For theme-loc or navigation tasks
@@ -3547,7 +3599,15 @@ server <- function(input, output, session) {
           mr <- TRUE
           t <- type_task[i]
         }
-        
+        # Capture the final stored drawing geometry for the selected DRAW task.
+        if (has_drawing_col && (type_task[i] == "free") && (cou == num_value_num()) &&
+            ans_type[[i]] == "DRAW" && ev[i] == "ON_OK_CLICKED") {
+          feats_i <- try(data[[1]]$events$answer$drawing$features[[i]], silent = TRUE)
+          if (!inherits(feats_i, "try-error") && is.data.frame(feats_i) && nrow(feats_i) > 0) {
+            drawing_feats <- feats_i
+          }
+        }
+
       }
       if (is.na(type_task[i]) && (i != 1) && (cou == num_value_num())) { #na task
         mr <- TRUE
@@ -4180,11 +4240,15 @@ server <- function(input, output, session) {
           )
       }
     }
-    if (length(dr_point_lng) != 0) {
+    if (length(dr_point_lng) != 0 || !is.null(drawing_feats)) {
       map_shown <- {
-        leaflet() %>%
-          addTiles() %>%
-          addPolylines(lng = unlist(dr_point_lng), lat = unlist(dr_point_lat), color = "red", weight = 2, opacity = 1, stroke = TRUE)
+        m <- leaflet() %>% addTiles()
+        if (!is.null(drawing_feats)) {
+          m <- add_drawing_features(m, drawing_feats)
+        } else {
+          m <- m %>% addPolylines(lng = unlist(dr_point_lng), lat = unlist(dr_point_lat), color = "red", weight = 2, opacity = 1, stroke = TRUE)
+        }
+        m
       }
     }
     if (length(lng_targ) != 0 && length(lng_true) != 0) {
@@ -4324,23 +4388,23 @@ server <- function(input, output, session) {
             )
         }
         
-        if (
-          length(dr_point_lng) >= 2 &&
-          length(dr_point_lat) >= 2 &&
-          length(dr_point_lng) == length(dr_point_lat)
-        ) {
-          map_shown <- leaflet() %>%
-            addTiles() %>%
-            addPolylines(
-              lng = dr_point_lng,
-              lat = dr_point_lat,
-              color = "red",
-              weight = 2,
-              opacity = 1,
-              stroke = TRUE
-            )
+        if (length(dr_point_lng) != 0 || !is.null(drawing_feats)) {
+          map_shown <- leaflet() %>% addTiles()
+          if (!is.null(drawing_feats)) {
+            map_shown <- add_drawing_features(map_shown, drawing_feats)
+          } else {
+            map_shown <- map_shown %>%
+              addPolylines(
+                lng = unlist(dr_point_lng),
+                lat = unlist(dr_point_lat),
+                color = "red",
+                weight = 2,
+                opacity = 1,
+                stroke = TRUE
+              )
+          }
         }
-        
+
         if (length(lng_targ) != 0 && length(lng_true) != 0) {
           map_shown <- leaflet() %>%
             addTiles() %>%
@@ -5223,7 +5287,14 @@ server <- function(input, output, session) {
     drawing_point_lat <- data[[1]]$events$clickPosition$latitude
     drawing_point_lng <- data[[1]]$events$clickPosition$longitude
     #print(drawing_point_lat)
-    
+
+    # Final stored drawing geometry (GeoJSON FeatureCollection persisted on the
+    # ON_OK_CLICKED answer for free DRAW tasks). Preferred over the raw click
+    # stream when present; falls back to clicks for older tracks.
+    drawing_feats <- NULL
+    has_drawing_col <- !is.null(data[[1]]$events$answer) &&
+      "drawing" %in% names(data[[1]]$events$answer)
+
     type_task <- data[[1]]$events$task$type
     cat_task <- data[[1]]$events$task$category
     accuracy_radius <- data[[1]]$events$task$settings$accuracy #For theme-loc or navigation tasks
@@ -5868,11 +5939,15 @@ server <- function(input, output, session) {
           )
       }
     }
-    if (length(dr_point_lng) != 0) {
+    if (length(dr_point_lng) != 0 || !is.null(drawing_feats)) {
       map_shown <- {
-        leaflet() %>%
-          addTiles() %>%
-          addPolylines(lng = unlist(dr_point_lng), lat = unlist(dr_point_lat), color = "red", weight = 2, opacity = 1, stroke = TRUE)
+        m <- leaflet() %>% addTiles()
+        if (!is.null(drawing_feats)) {
+          m <- add_drawing_features(m, drawing_feats)
+        } else {
+          m <- m %>% addPolylines(lng = unlist(dr_point_lng), lat = unlist(dr_point_lat), color = "red", weight = 2, opacity = 1, stroke = TRUE)
+        }
+        m
       }
     }
     if (length(lng_targ) != 0 && length(lng_true) != 0) {
@@ -6010,23 +6085,23 @@ server <- function(input, output, session) {
             )
         }
         
-        if (
-          length(dr_point_lng) >= 2 &&
-          length(dr_point_lat) >= 2 &&
-          length(dr_point_lng) == length(dr_point_lat)
-        ) {
-          map_shown <- leaflet() %>%
-            addTiles() %>%
-            addPolylines(
-              lng = dr_point_lng,
-              lat = dr_point_lat,
-              color = "red",
-              weight = 2,
-              opacity = 1,
-              stroke = TRUE
-            )
+        if (length(dr_point_lng) != 0 || !is.null(drawing_feats)) {
+          map_shown <- leaflet() %>% addTiles()
+          if (!is.null(drawing_feats)) {
+            map_shown <- add_drawing_features(map_shown, drawing_feats)
+          } else {
+            map_shown <- map_shown %>%
+              addPolylines(
+                lng = unlist(dr_point_lng),
+                lat = unlist(dr_point_lat),
+                color = "red",
+                weight = 2,
+                opacity = 1,
+                stroke = TRUE
+              )
+          }
         }
-        
+
         if (length(lng_targ) != 0 && length(lng_true) != 0) {
           map_shown <- leaflet() %>%
             addTiles() %>%
@@ -7087,6 +7162,153 @@ server <- function(input, output, session) {
 
         if (result$status == 200) {
           shared_emails_rv(result$data$sharedWith)
+          showNotification(paste0("Removed ", email_to_remove), type = "message")
+        } else {
+          showNotification("Could not remove user.", type = "error")
+        }
+      }, ignoreInit = TRUE, once = TRUE)
+    })
+  })
+
+
+  # ── Share a single track ───────────────────────────────────────────
+  # Mirrors the game-share flow above, but targets one specific track via
+  # /track/:id/share. The server resolves the track owner (instructor for
+  # class plays, otherwise the game creator); only the owner or an admin can
+  # manage sharing. selected_files is a multi-select picker, so the button is
+  # only offered when exactly one track is selected.
+
+  # Current shared-with emails for the selected track.
+  track_shared_emails_rv <- reactiveVal(character(0))
+
+  # Show the button only when exactly one track is selected.
+  output$share_track_button_ui <- renderUI({
+    req(input$selected_files)
+    if (length(input$selected_files) > 1) {
+      return(p(style = "color: #888; margin-top: 10px;",
+               "Select a single track to share it."))
+    }
+    div(
+      style = "margin-top: 10px;",
+      actionButton("open_share_track_modal", "Share this track",
+                   icon = icon("share-alt"),
+                   style = "width: 150px;")
+    )
+  })
+
+  # Open the modal: fetch who this track is already shared with.
+  observeEvent(input$open_share_track_modal, {
+    req(input$selected_files, accessToken_rv(), apiURL_rv())
+
+    track_id <- input$selected_files[1]
+    url <- paste0(apiURL_rv(), "/track/", track_id, "/share")
+    result <- api_get(url, accessToken_rv())
+
+    if (result$status == 200 && !is.null(result$data$sharedWith)) {
+      track_shared_emails_rv(result$data$sharedWith)
+    } else {
+      track_shared_emails_rv(character(0))
+    }
+
+    showModal(modalDialog(
+      title = "Share this track",
+      size = "m",
+      easyClose = TRUE,
+
+      p("Grant other GeoGami users access to view this single track by entering their email."),
+
+      div(
+        style = "display: flex; gap: 8px; align-items: flex-end;",
+        div(style = "flex: 1;",
+            textInput("share_track_email_input", "Email address:", placeholder = "user@example.com")
+        ),
+        actionButton("share_track_add_btn", "Share", icon = icon("plus"),
+                     class = "btn-primary", style = "margin-bottom: 15px;")
+      ),
+
+      uiOutput("shared_track_list_ui"),
+
+      footer = modalButton("Close")
+    ))
+  })
+
+  # Render the list of emails this track is currently shared with.
+  output$shared_track_list_ui <- renderUI({
+    emails <- track_shared_emails_rv()
+    if (length(emails) == 0) {
+      return(p(style = "color: #888;", "Not shared with anyone yet."))
+    }
+
+    tags$div(
+      tags$h6(paste0("Shared with (", length(emails), "):")),
+      tags$ul(
+        style = "list-style: none; padding-left: 0;",
+        lapply(seq_along(emails), function(i) {
+          tags$li(
+            style = "display: flex; align-items: center; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #eee;",
+            tags$span(emails[i]),
+            actionButton(
+              inputId = paste0("remove_track_share_", i),
+              label = NULL,
+              icon = icon("times"),
+              class = "btn-sm btn-outline-danger",
+              style = "padding: 2px 8px;"
+            )
+          )
+        })
+      )
+    )
+  })
+
+  # Handle the "Share" button click: validate email, POST to server.
+  observeEvent(input$share_track_add_btn, {
+    req(input$selected_files, accessToken_rv(), apiURL_rv())
+
+    email <- trimws(tolower(input$share_track_email_input))
+    if (!grepl("@", email)) {
+      showNotification("Please enter a valid email address.", type = "warning")
+      return()
+    }
+
+    track_id <- input$selected_files[1]
+    url <- paste0(apiURL_rv(), "/track/", track_id, "/share")
+
+    result <- api_request(url, accessToken_rv(), body = list(emails = list(email)), method = "POST")
+
+    # Use the server's message verbatim (it explains which emails were added,
+    # skipped because they're the owner, or rejected because no account exists).
+    server_msg <- if (!is.null(result$data$message)) result$data$message else ""
+
+    if (result$status == 200) {
+      track_shared_emails_rv(result$data$sharedWith)
+      updateTextInput(session, "share_track_email_input", value = "")
+      msg <- if (nzchar(server_msg)) server_msg else paste0("Shared with ", email)
+      showNotification(msg, type = "message", duration = 6)
+    } else if (result$status == 400 && nzchar(server_msg)) {
+      showNotification(server_msg, type = "warning", duration = 8)
+    } else {
+      msg <- if (nzchar(server_msg)) server_msg else "Could not share."
+      showNotification(msg, type = "error")
+    }
+  })
+
+  # Per-email "X" revoke buttons: DELETE /track/:id/share.
+  observe({
+    emails <- track_shared_emails_rv()
+    lapply(seq_along(emails), function(i) {
+      btn_id <- paste0("remove_track_share_", i)
+      observeEvent(input[[btn_id]], {
+        req(input$selected_files, accessToken_rv(), apiURL_rv())
+
+        email_to_remove <- emails[i]
+        track_id <- input$selected_files[1]
+        url <- paste0(apiURL_rv(), "/track/", track_id, "/share")
+        result <- api_request(url, accessToken_rv(),
+                              body = list(emails = list(email_to_remove)),
+                              method = "DELETE")
+
+        if (result$status == 200) {
+          track_shared_emails_rv(result$data$sharedWith)
           showNotification(paste0("Removed ", email_to_remove), type = "message")
         } else {
           showNotification("Could not remove user.", type = "error")
