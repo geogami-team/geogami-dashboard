@@ -316,6 +316,62 @@ ui <- page_sidebar(
 }
 
 
+/* Stable layout for All tasks DT table */
+#iris_data table.dataTable {
+  table-layout: fixed !important;
+  width: 100% !important;
+}
+
+/* Row-number column added by DT */
+#iris_data table.dataTable thead th:nth-child(1),
+#iris_data table.dataTable tbody td:nth-child(1) {
+  width: 45px !important;
+  min-width: 45px !important;
+  max-width: 45px !important;
+  white-space: nowrap !important;
+}
+
+/* Type column */
+#iris_data table.dataTable thead th:nth-child(2),
+#iris_data table.dataTable tbody td:nth-child(2) {
+  width: 150px !important;
+  min-width: 150px !important;
+  max-width: 150px !important;
+  white-space: normal !important;
+}
+
+/* Assignment column - fixed */
+#iris_data table.dataTable thead th:nth-child(3),
+#iris_data table.dataTable tbody td:nth-child(3) {
+  width: 380px !important;
+  min-width: 380px !important;
+  max-width: 380px !important;
+  white-space: normal !important;
+}
+
+/* Numeric / direction columns */
+#iris_data table.dataTable thead th:nth-child(n+5),
+#iris_data table.dataTable tbody td:nth-child(n+5) {
+  text-align: center !important;
+  white-space: normal !important;
+}
+
+/* Compact header */
+#iris_data table.dataTable thead th {
+  font-size: 12px !important;
+  padding: 6px 5px !important;
+  vertical-align: middle !important;
+}
+
+/* Compact body */
+#iris_data table.dataTable tbody td {
+  font-size: 13px !important;
+  padding: 6px 5px !important;
+  vertical-align: top !important;
+}
+
+
+
   "),
                
                
@@ -875,23 +931,21 @@ server <- function(input, output, session) {
     ifelse(is.finite(x), ((x %% 360) + 360) %% 360, NA_real_)
   }
   
-  format_bearing_deg <- function(x, digits = 2) {
-    x <- normalize_deg(x)
-    out <- rep(NA_character_, length(x))
-    ok <- is.finite(x)
-    out[ok] <- paste0(round(x[ok], digits), " °")
-    out
-  }
-  
-  
-  ## HELPER FUNCTION FOR ROTATION ANGLE COLUMN - STARTS ######
-  
-  format_angle_deg <- function(x, digits = 2) {
+  format_numeric_clean <- function(x, digits = 2) {
     x <- num(x)
     out <- rep(NA_character_, length(x))
     ok <- is.finite(x)
-    out[ok] <- paste0(round(x[ok], digits), " °")
+    out[ok] <- as.character(round(x[ok], digits))
     out
+  }
+  
+  format_bearing_deg <- function(x, digits = 2) {
+    x <- normalize_deg(x)
+    format_numeric_clean(x, digits)
+  }
+  
+  format_angle_deg <- function(x, digits = 2) {
+    format_numeric_clean(x, digits)
   }
   
   get_initial_viewing_bearing <- function(j, evts) {
@@ -1120,6 +1174,25 @@ server <- function(input, output, session) {
   ###########ends : Default fallback accuracy of Navigation and direction tasks #########
   
   
+  
+  ######renaming compare players tab columns with units - starts - helper function#######
+  rename_unit_headers <- function(df) {
+    if (is.null(df) || nrow(df) == 0) return(df)
+    
+    names(df)[names(df) == "Time"] <- "Time (s)"
+    names(df)[names(df) == "Distance travelled"] <- "Distance travelled (m)"
+    names(df)[names(df) == "Error to target"] <- "Error to target (m)"
+    names(df)[names(df) == "Error"] <- "Error (°)"
+    
+    names(df)[names(df) == "Viewing direction"] <- "Viewing dir. (°)"
+    names(df)[names(df) == "Final viewing direction"] <- "Final view dir. (°)"
+    names(df)[names(df) == "Pointing direction"] <- "Pointing dir. (°)"
+    names(df)[names(df) == "Rotation angle"] <- "Rotation (°)"
+    names(df)[names(df) == "Final Answer"] <- "Final answer (°)"
+    
+    df
+  }
+  ######renaming compare players tab columns with units - ENDS - helper function#######
   
   
   ####R helper function ##################
@@ -1475,7 +1548,7 @@ server <- function(input, output, session) {
       dir_parts <- get_direction_components(idx, evts)
       err_deg <- dir_parts$direction_error
       
-      if (is.finite(err_deg)) return(paste0(round(err_deg, 2), " °"))
+      if (is.finite(err_deg)) return(as.character(round(err_deg, 2)))
       return(NA_character_)
     }
     
@@ -1489,10 +1562,10 @@ server <- function(input, output, session) {
       } else {
         err_m
       }
-      return(paste0(round(shown_m, 2), " m"))
+      return(as.character(round(shown_m, 2)))
     }
     
-    paste0(round(err_m, 2), " m")
+    as.character(round(err_m, 2))
   }
   
   
@@ -1537,6 +1610,78 @@ server <- function(input, output, session) {
     x <- as.character(x[1])
     !is.na(x) && nzchar(trimws(x))
   }
+  
+  to_numeric_vector_safe <- function(x) {
+    if (is.null(x) || length(x) == 0) return(numeric(0))
+    x <- unlist(x, use.names = FALSE)
+    if (!length(x)) return(numeric(0))
+    if (is.character(x)) x <- gsub(",", ".", x, fixed = TRUE)
+    suppressWarnings(as.numeric(x))
+  }
+  
+  has_task_waypoints <- function(track, task_no) {
+    if (is.null(track) || is.null(track$waypoints)) return(FALSE)
+    
+    wps <- track$waypoints
+    
+    if (
+      is.null(wps$taskNo) ||
+      is.null(wps$position$coords$longitude) ||
+      is.null(wps$position$coords$latitude)
+    ) {
+      return(FALSE)
+    }
+    
+    task_no_all <- suppressWarnings(as.integer(unlist(wps$taskNo, use.names = FALSE)))
+    keep <- which(task_no_all == as.integer(task_no))
+    
+    if (!length(keep)) return(FALSE)
+    
+    lng <- to_numeric_vector_safe(wps$position$coords$longitude[keep])
+    lat <- to_numeric_vector_safe(wps$position$coords$latitude[keep])
+    
+    n <- min(length(lng), length(lat))
+    if (n < 2) return(FALSE)
+    
+    sum(is.finite(lng[seq_len(n)]) & is.finite(lat[seq_len(n)])) >= 2
+  }
+  
+  has_free_drawing_points <- function(evts, block) {
+    if (
+      is.null(evts$clickPosition$longitude) ||
+      is.null(evts$clickPosition$latitude)
+    ) {
+      return(FALSE)
+    }
+    
+    lng <- to_numeric_vector_safe(evts$clickPosition$longitude[block])
+    lat <- to_numeric_vector_safe(evts$clickPosition$latitude[block])
+    
+    n <- min(length(lng), length(lat))
+    if (n < 2) return(FALSE)
+    
+    sum(is.finite(lng[seq_len(n)]) & is.finite(lat[seq_len(n)])) >= 2
+  }
+  
+  has_object_map_geometry <- function(evts, block) {
+    any(vapply(block, function(i) {
+      task_type_i <- try(evts$task$type[i], silent = TRUE)
+      task_type_i <- if (inherits(task_type_i, "try-error") || is.null(task_type_i) || length(task_type_i) == 0) {
+        NA_character_
+      } else {
+        as.character(task_type_i[1])
+      }
+      
+      if (is.na(task_type_i) || task_type_i != "theme-object") {
+        return(FALSE)
+      }
+      
+      ring <- get_polygon_ring(evts, i)
+      !is.null(ring) && nrow(ring) >= 3
+    }, logical(1)))
+  }
+  
+  
   
   task_choice_styles <- function(track, n_tasks = NULL) {
     if (is.null(track) || is.null(track$events)) {
@@ -1595,9 +1740,28 @@ server <- function(input, output, session) {
         as.character(task_type[1])
       }
       
-      # ----- Map tab: grey if information task OR free task -----
-      map_grey[k] <- (!is.na(task_cat) && task_cat == "info") ||
-        (!is.na(task_type) && task_type == "free")
+      # ----- Map tab: grey only if there is no useful map content -----
+      is_info_task <- (!is.na(task_cat) && task_cat == "info") ||
+        (!is.na(task_type) && task_type == "info")
+      
+      is_free_task <- !is.na(task_type) && task_type == "free"
+      is_object_task <- !is.na(task_type) && task_type == "theme-object"
+      
+      has_free_map_content <- FALSE
+      has_object_map_content <- FALSE
+      
+      if (is_free_task) {
+        has_free_map_content <- has_free_drawing_points(evts, block) ||
+          has_task_waypoints(track, k)
+      }
+      
+      if (is_object_task) {
+        has_object_map_content <- has_object_map_geometry(evts, block)
+      }
+      
+      map_grey[k] <- is_info_task ||
+        (is_free_task && !has_free_map_content) ||
+        (is_object_task && !has_object_map_content)
       
       # ----- Compare Players / Statistics tabs: grey where no meaningful output is produced -----
       is_info_task <- (!is.na(task_cat) && task_cat == "info") ||
@@ -2106,6 +2270,23 @@ server <- function(input, output, session) {
   ###########ENDS - HELPER FUNCTION FOR MAKING INFORMATION TEXT SHORTER THAT IS UPTO 2 LINES ONLY ON THE ALL TASKS MAIN TAB###########
   
   
+  ####helper starts - applying assignment column limit######
+  apply_assignment_display_limit <- function(df) {
+    if (is.null(df) || nrow(df) == 0) return(df)
+    if (!("Assignment" %in% names(df))) return(df)
+    
+    # Apply 2-line display limit to ALL assignment texts in dashboard only
+    df$Assignment <- assignment_two_line_html(df$Assignment, max_chars = 120)
+    
+    df
+  }
+  ####helper ends - applying assignment column limit######
+  
+  
+  
+  
+  
+  
   ######## MAKING HELPER FUNCTION FOR ADDING THE NEW DOWNLOAD BUTTON IN BIG TABLE 'SAVE ALL TO CSV' START #############
   pretty_task_type <- function(x) {
     x <- as.character(x)
@@ -2139,28 +2320,28 @@ server <- function(input, output, session) {
       Type = vapply(sm$task_type, pretty_task_type, character(1)),
       Assignment = clean_export_text(sm$assignment),
       Answer = clean_export_text(sm$answer_txt),
-      `Time(s)` = ifelse(is.na(sm$time_s), NA_character_, paste0(sm$time_s, " s")),
+      `Time (s)` = sm$time_s,
       Tries = sm$tries,
-      `Viewing direction` = format_bearing_deg(sm$viewing_direction),
-      `Final viewing direction` = format_bearing_deg(sm$final_viewing_direction),
-      `Pointing direction` = format_bearing_deg(sm$pointing_direction),
-      `Rotation angle` = format_angle_deg(sm$rotation_angle),
-      `Final Answer` = format_bearing_deg(sm$final_answer_direction),
+      `Viewing dir. (°)` = format_bearing_deg(sm$viewing_direction),
+      `Final view dir. (°)` = format_bearing_deg(sm$final_viewing_direction),
+      `Pointing dir. (°)` = format_bearing_deg(sm$pointing_direction),
+      `Rotation (°)` = format_angle_deg(sm$rotation_angle),
+      `Final answer (°)` = format_bearing_deg(sm$final_answer_direction),
       check.names = FALSE,
       stringsAsFactors = FALSE
     )
     
-    df[["Error in °/m"]] <- sm$error_txt
+    df[["Error (°/m)"]] <- sm$error_txt
     
     info_mask <- tolower(trimws(df$Type)) == "information"
     df$Answer[info_mask] <- NA_character_
     df$Tries[info_mask] <- 0
-    df[["Viewing direction"]][info_mask] <- NA_character_
-    df[["Final viewing direction"]][info_mask] <- NA_character_
-    df[["Pointing direction"]][info_mask] <- NA_character_
-    df[["Rotation angle"]][info_mask] <- NA_character_
-    df[["Final Answer"]][info_mask] <- NA_character_
-    df[["Error in °/m"]][info_mask] <- NA_character_
+    df[["Viewing dir. (°)"]][info_mask] <- NA_character_
+    df[["Final view dir. (°)"]][info_mask] <- NA_character_
+    df[["Pointing dir. (°)"]][info_mask] <- NA_character_
+    df[["Rotation (°)"]][info_mask] <- NA_character_
+    df[["Final answer (°)"]][info_mask] <- NA_character_
+    df[["Error (°/m)"]][info_mask] <- NA_character_
     
     # For Save All Players CSV: save only the visible shortened information text
     df <- apply_info_assignment_limit(df, html = FALSE)
@@ -2243,11 +2424,19 @@ server <- function(input, output, session) {
   ######Starts - Helper function for advanced direction analysis toggle buttons#####
   # ---- Advanced Direction Task Analysis toggle helpers ----
   advanced_direction_cols <- c(
+    # old internal names, still used by Compare Players before renaming
     "Viewing direction",
     "Final viewing direction",
     "Pointing direction",
     "Rotation angle",
-    "Final Answer"
+    "Final Answer",
+    
+    # new display/export names for All tasks
+    "Viewing dir. (°)",
+    "Final view dir. (°)",
+    "Pointing dir. (°)",
+    "Rotation (°)",
+    "Final answer (°)"
   )
   
   drop_advanced_direction_cols <- function(df) {
@@ -3360,18 +3549,41 @@ server <- function(input, output, session) {
 
         
         
-        if (type_task[i] == "theme-object" && cou == num_value_num() && ans_type[[i]] == "MAP_POINT") { #tasks that show nothing on the map
-          poly <- sel_polygon[[i]]$geometry$coordinates[[1]]
-          for (n in 1:(length(poly)/2)) {
-            lng_poly <- append(lng_poly, poly[n])
-          }
-          for (n in (length(poly)/2+1):length(poly)) {
-            lat_poly <- append(lat_poly, poly[n])
-          }
+        if (!is.na(type_task[i]) && type_task[i] == "theme-object" && cou == num_value_num()) {
+          
+          # Always set task type for object-location tasks.
+          # This prevents "No task exists with this number" for MULTIPLE_CHOICE object tasks.
           t <- type_task[i]
-          if (type_task[i] == "theme-object" && (cou == num_value_num())) {
-            lng_ans_obj <- append(lng_ans_obj, targ[[i]][1])
-            lat_ans_obj <- append(lat_ans_obj, targ[[i]][2])
+          
+          ans_i <- if (!is.null(ans_type) && length(ans_type) >= i) {
+            as.character(ans_type[[i]])
+          } else {
+            NA_character_
+          }
+          
+          # Object-location tasks can have map geometry even when the answer is MULTIPLE_CHOICE.
+          # Example: "Wähle das passende Foto für den markierten Ort."
+          ring <- get_polygon_ring(data[[1]]$events, i)
+          
+          if (!is.null(ring) && nrow(ring) >= 3) {
+            lng_poly <- as.list(ring[, 1])
+            lat_poly <- as.list(ring[, 2])
+            mr <- FALSE
+          } else if (!is.na(ans_i) && ans_i %in% c("PHOTO", "MULTIPLE_CHOICE")) {
+            # If an object-photo / object-multiple-choice task has no geometry,
+            # then there is genuinely nothing useful to draw on the map.
+            mr <- TRUE
+          }
+          
+          # Only MAP_POINT object tasks have a clicked answer marker.
+          # MULTIPLE_CHOICE object tasks should show the marked polygon only.
+          if (!is.na(ans_i) && ans_i == "MAP_POINT") {
+            cp <- get_click_lonlat(data[[1]]$events, i)
+            
+            if (length(cp) == 2 && all(is.finite(cp))) {
+              lng_ans_obj <- append(lng_ans_obj, cp[1])
+              lat_ans_obj <- append(lat_ans_obj, cp[2])
+            }
           }
         }
         if ((type_task[i] == "free") && (cou == num_value_num()) && length(drawing_point_lat) != 0 && !is.na(drawing_point_lat[[i]]) && ans_type[[i]] == "DRAW") {
@@ -3493,14 +3705,14 @@ server <- function(input, output, session) {
       Type = vapply(sm$task_type, pretty_task_type, character(1)),
       Assignment = sm$assignment,
       Answer = sm$answer_txt,
-      `Time(s)` = ifelse(is.na(sm$time_s), NA_character_, paste0(sm$time_s, " s")),
+      `Time (s)` = sm$time_s,
       Tries = sm$tries,
-      `Viewing direction` = format_bearing_deg(sm$viewing_direction),
-      `Final viewing direction` = format_bearing_deg(sm$final_viewing_direction),
-      `Pointing direction` = format_bearing_deg(sm$pointing_direction),
-      `Rotation angle` = format_angle_deg(sm$rotation_angle),
-      `Final Answer` = format_bearing_deg(sm$final_answer_direction),
-      `Error in °/m` = sm$error_txt,
+      `Viewing dir. (°)` = format_bearing_deg(sm$viewing_direction),
+      `Final view dir. (°)` = format_bearing_deg(sm$final_viewing_direction),
+      `Pointing dir. (°)` = format_bearing_deg(sm$pointing_direction),
+      `Rotation (°)` = format_angle_deg(sm$rotation_angle),
+      `Final answer (°)` = format_bearing_deg(sm$final_answer_direction),
+      `Error (°/m)` = sm$error_txt,
       check.names = FALSE,
       stringsAsFactors = FALSE
     )
@@ -3508,14 +3720,14 @@ server <- function(input, output, session) {
     info_mask <- tolower(trimws(df$Type)) == "information"
     df$Answer[info_mask] <- NA_character_
     df$Tries[info_mask] <- 0
-    df[["Viewing direction"]][info_mask] <- NA_character_
-    df[["Final viewing direction"]][info_mask] <- NA_character_
-    df[["Pointing direction"]][info_mask] <- NA_character_
-    df[["Rotation angle"]][info_mask] <- NA_character_
-    df[["Final Answer"]][info_mask] <- NA_character_
-    df[["Error in °/m"]][info_mask] <- NA_character_
+    df[["Viewing dir. (°)"]][info_mask] <- NA_character_
+    df[["Final view dir. (°)"]][info_mask] <- NA_character_
+    df[["Pointing dir. (°)"]][info_mask] <- NA_character_
+    df[["Rotation (°)"]][info_mask] <- NA_character_
+    df[["Final answer (°)"]][info_mask] <- NA_character_
+    df[["Error (°/m)"]][info_mask] <- NA_character_
     # For dashboard display: show max 2-line information text, full text on hover
-    df <- apply_info_assignment_limit(df, html = TRUE)
+    df <- apply_assignment_display_limit(df)
     
     
     
@@ -3649,7 +3861,12 @@ server <- function(input, output, session) {
       DT::datatable(
         df_show,
         escape = setdiff(names(df_show), "Assignment"),
-        options = list(pageLength = 10, ordering = FALSE)
+        class = "compact stripe hover",
+        options = list(
+          pageLength = 10,
+          ordering = FALSE,
+          autoWidth = FALSE
+        )
       )
     })
     
@@ -4604,8 +4821,8 @@ server <- function(input, output, session) {
       row <- hit[1, , drop = FALSE]
       
       correct_txt <- row$status
-      time_txt <- if (is.na(row$time_s)) NA_character_ else paste0(row$time_s, " s")
-      dist_txt <- if (is.na(row$dist_travel_m)) NA_character_ else paste0(round(row$dist_travel_m), " m")
+      time_txt <- if (is.na(row$time_s)) NA_character_ else as.character(row$time_s)
+      dist_txt <- if (is.na(row$dist_travel_m)) NA_character_ else as.character(round(row$dist_travel_m))
       
       # Big-table style:
       # - blank if Correct
@@ -4676,7 +4893,10 @@ server <- function(input, output, session) {
       ngts[, c("Name", "Correct", "Time", "Distance travelled", "Error to target"), drop = FALSE]
     }
     
-    output$cmp_table1 <- renderTable(ngts_display)
+    output$cmp_table1 <- renderTable({
+      rename_unit_headers(ngts_display)
+    })
+    
     output$cmp_table2 <- renderTable({
       df_show <- cores
       
@@ -4684,7 +4904,7 @@ server <- function(input, output, session) {
         df_show <- drop_advanced_direction_cols(df_show)
       }
       
-      df_show
+      rename_unit_headers(df_show)
     })
     
     # Legends
@@ -4756,8 +4976,8 @@ server <- function(input, output, session) {
     output$pie_chart2 <- renderPlot({ pie_chart })
     
     # Time vs distance scatter (uses same ngts table)
-    time_num <- suppressWarnings(as.numeric(sub(" s$", "", ngts$Time)))
-    dist_num <- suppressWarnings(as.numeric(sub(" m$", "", ngts$`Distance travelled`)))
+    time_num <- suppressWarnings(as.numeric(ngts$Time))
+    dist_num <- suppressWarnings(as.numeric(ngts$`Distance travelled`))
     
     df_player <- data.frame(
       time = time_num,
@@ -4858,6 +5078,7 @@ server <- function(input, output, session) {
           }
         }
         
+        df_out <- rename_unit_headers(df_out)
         write_csv_excel_utf8(df_out, file, na = "NA")
       }
     )
@@ -4886,6 +5107,7 @@ server <- function(input, output, session) {
           )
         }
         
+        df_out <- rename_unit_headers(df_out)
         write_csv_excel_utf8(df_out, file, na = "NA")
       }
     )
@@ -5168,18 +5390,41 @@ server <- function(input, output, session) {
 
         
         
-        if (type_task[i] == "theme-object" && cou == num_value_num() && ans_type[[i]] == "MAP_POINT") { #tasks that show nothing on the map
-          poly <- sel_polygon[[i]]$geometry$coordinates[[1]]
-          for (n in 1:(length(poly)/2)) {
-            lng_poly <- append(lng_poly, poly[n])
-          }
-          for (n in (length(poly)/2+1):length(poly)) {
-            lat_poly <- append(lat_poly, poly[n])
-          }
+        if (!is.na(type_task[i]) && type_task[i] == "theme-object" && cou == num_value_num()) {
+          
+          # Always set task type for object-location tasks.
+          # This prevents "No task exists with this number" for MULTIPLE_CHOICE object tasks.
           t <- type_task[i]
-          if (type_task[i] == "theme-object" && (cou == num_value_num())) {
-            lng_ans_obj <- append(lng_ans_obj, targ[[i]][1])
-            lat_ans_obj <- append(lat_ans_obj, targ[[i]][2])
+          
+          ans_i <- if (!is.null(ans_type) && length(ans_type) >= i) {
+            as.character(ans_type[[i]])
+          } else {
+            NA_character_
+          }
+          
+          # Object-location tasks can have map geometry even when the answer is MULTIPLE_CHOICE.
+          # Example: "Wähle das passende Foto für den markierten Ort."
+          ring <- get_polygon_ring(data[[1]]$events, i)
+          
+          if (!is.null(ring) && nrow(ring) >= 3) {
+            lng_poly <- as.list(ring[, 1])
+            lat_poly <- as.list(ring[, 2])
+            mr <- FALSE
+          } else if (!is.na(ans_i) && ans_i %in% c("PHOTO", "MULTIPLE_CHOICE")) {
+            # If an object-photo / object-multiple-choice task has no geometry,
+            # then there is genuinely nothing useful to draw on the map.
+            mr <- TRUE
+          }
+          
+          # Only MAP_POINT object tasks have a clicked answer marker.
+          # MULTIPLE_CHOICE object tasks should show the marked polygon only.
+          if (!is.na(ans_i) && ans_i == "MAP_POINT") {
+            cp <- get_click_lonlat(data[[1]]$events, i)
+            
+            if (length(cp) == 2 && all(is.finite(cp))) {
+              lng_ans_obj <- append(lng_ans_obj, cp[1])
+              lat_ans_obj <- append(lat_ans_obj, cp[2])
+            }
           }
         }
         if ((type_task[i] == "free") && (cou == num_value_num()) && length(drawing_point_lat) != 0 && !is.na(drawing_point_lat[[i]]) && ans_type[[i]] == "DRAW") {
@@ -5290,14 +5535,14 @@ server <- function(input, output, session) {
       Type = vapply(sm$task_type, pretty_task_type, character(1)),
       Assignment = sm$assignment,
       Answer = sm$answer_txt,
-      `Time(s)` = ifelse(is.na(sm$time_s), NA_character_, paste0(sm$time_s, " s")),
+      `Time (s)` = sm$time_s,
       Tries = sm$tries,
-      `Viewing direction` = format_bearing_deg(sm$viewing_direction),
-      `Final viewing direction` = format_bearing_deg(sm$final_viewing_direction),
-      `Pointing direction` = format_bearing_deg(sm$pointing_direction),
-      `Rotation angle` = format_angle_deg(sm$rotation_angle),
-      `Final Answer` = format_bearing_deg(sm$final_answer_direction),
-      `Error in °/m` = sm$error_txt,
+      `Viewing dir. (°)` = format_bearing_deg(sm$viewing_direction),
+      `Final view dir. (°)` = format_bearing_deg(sm$final_viewing_direction),
+      `Pointing dir. (°)` = format_bearing_deg(sm$pointing_direction),
+      `Rotation (°)` = format_angle_deg(sm$rotation_angle),
+      `Final answer (°)` = format_bearing_deg(sm$final_answer_direction),
+      `Error (°/m)` = sm$error_txt,
       check.names = FALSE,
       stringsAsFactors = FALSE
     )
@@ -5305,15 +5550,15 @@ server <- function(input, output, session) {
     info_mask <- tolower(trimws(df$Type)) == "information"
     df$Answer[info_mask] <- NA_character_
     df$Tries[info_mask] <- 0
-    df[["Viewing direction"]][info_mask] <- NA_character_
-    df[["Final viewing direction"]][info_mask] <- NA_character_
-    df[["Pointing direction"]][info_mask] <- NA_character_
-    df[["Rotation angle"]][info_mask] <- NA_character_
-    df[["Final Answer"]][info_mask] <- NA_character_
-    df[["Error in °/m"]][info_mask] <- NA_character_
+    df[["Viewing dir. (°)"]][info_mask] <- NA_character_
+    df[["Final view dir. (°)"]][info_mask] <- NA_character_
+    df[["Pointing dir. (°)"]][info_mask] <- NA_character_
+    df[["Rotation (°)"]][info_mask] <- NA_character_
+    df[["Final answer (°)"]][info_mask] <- NA_character_
+    df[["Error (°/m)"]][info_mask] <- NA_character_
     
     # For dashboard display: show max 2-line information text, full text on hover
-    df <- apply_info_assignment_limit(df, html = TRUE)
+    df <- apply_assignment_display_limit(df)
     
     
     
@@ -5442,7 +5687,12 @@ server <- function(input, output, session) {
       DT::datatable(
         df_show,
         escape = setdiff(names(df_show), "Assignment"),
-        options = list(pageLength = 10, ordering = FALSE)
+        class = "compact stripe hover",
+        options = list(
+          pageLength = 10,
+          ordering = FALSE,
+          autoWidth = FALSE
+        )
       )
     })
     
