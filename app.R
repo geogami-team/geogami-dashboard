@@ -542,13 +542,43 @@ ui <- page_sidebar(
         fileInput("uploaded_json_file", "Upload JSON file:", accept = ".json", multiple = FALSE),
     ),
     
+    #filter 0 - event selection (above game selection)
+    conditionalPanel(
+      condition = "typeof window.location.search.match(/token=([^&]+)/) !== 'undefined' && window.location.search.match(/token=([^&]+)/) !== null",
+      div(style = "border: 1px solid #ccc; padding: 10px; margin-bottom: 15px; border-radius: 8px;",
+          pickerInput(
+            inputId = "selected_event",
+            label = "Select event:",
+            choices = NULL,  # populated from /event/userevents
+            multiple = FALSE,
+            options = list(
+              `live-search` = FALSE,
+              `none-selected-text` = "No events",
+              `width` = '100%',
+              container = FALSE,
+              size = 10
+            )
+          ),
+          # Active event-filter banner + "show all" reset. Only visible while an
+          # event is selected; reframes the narrowed game/player lists as an
+          # intentional filter rather than missing data.
+          uiOutput("event_filter_banner")
+      )
+    ),
+
+    # Share event button — appears once an event is selected (owner-only on the server)
+    conditionalPanel(
+      condition = "typeof window.location.search.match(/token=([^&]+)/) !== 'undefined' && window.location.search.match(/token=([^&]+)/) !== null",
+      uiOutput("share_event_button_ui")
+    ),
+
     #filter 1 - game selection
     conditionalPanel(
       condition = "typeof window.location.search.match(/token=([^&]+)/) !== 'undefined' && window.location.search.match(/token=([^&]+)/) !== null",
       div(style = "border: 1px solid #ccc; padding: 10px; margin-bottom: 15px; border-radius: 8px;",
           pickerInput(
             inputId = "selected_games",
-            label = "Select your game:",
+            label = "Select a game:",
             choices = NULL,  # Leave it empty initially
             multiple = FALSE,
             options = list(
@@ -2311,8 +2341,26 @@ server <- function(input, output, session) {
   track_data_rv <- reactiveVal()
   
   choices_rv <- reactiveVal() #FOR ENSURING THAT RIGHT NAME IS REFLECTED IN SELECTIZEINPUT INSTEAD OF MONGO DB IDs
-  
-  
+
+  # ── Events (experimental studies / school excursions) ────────────────
+  # Picker choices for the event selector: event name -> event id, always with
+  # a leading "Not selected" option (value = EVENT_NONE) when events exist.
+  events_choices_rv <- reactiveVal(setNames(character(0), character(0)))
+  # Per-event game mapping: a list keyed by event id whose value is a named
+  # char vector (game name -> game id). Used to narrow the game picker.
+  event_games_rv <- reactiveVal(list())
+  # Emails the currently-selected event is shared with (for the share modal).
+  event_shared_emails_rv <- reactiveVal(character(0))
+  # Sentinel for the "Not selected" option (no event filter active). Empty
+  # string is avoided because pickerInput treats it inconsistently.
+  EVENT_NONE <- "__none__"
+  # TRUE when a real event is selected (filter active).
+  event_is_active <- reactive({
+    ev <- input$selected_event
+    !is.null(ev) && nzchar(ev) && ev != EVENT_NONE
+  })
+
+
   #### only players selected on left should appear on right *starts) #####
   
   filtered_choices_r <- reactive({
@@ -2664,26 +2712,151 @@ server <- function(input, output, session) {
   })
   
   #############---------------LOADING GAMES END (NEWEST ON TOP)-----################
-  
-  
+
+
+  #############---------------LOADING EVENTS start-----################
+  # Load the user's events (owned + shared) and populate the event picker. The
+  # first option is always "Not selected" so the dashboard starts unfiltered.
+  observe({
+    req(accessToken_rv())
+    req(apiURL_rv())
+
+    apiUrl <- paste0(apiURL_rv(), "/event/userevents")
+    events_data <- fetch_games_data_from_server(apiUrl, accessToken_rv())
+
+    if (is.null(events_data) || NROW(events_data) == 0) {
+      # No events: disable the picker and show a clear empty message.
+      events_choices_rv(setNames(character(0), character(0)))
+      event_games_rv(list())
+      # No events: the picker holds only a single "No events" option, so there
+      # is nothing to filter by (effectively a disabled state without needing a
+      # client-side JS dependency).
+      updatePickerInput(
+        session, "selected_event",
+        choices = c("No events" = EVENT_NONE),
+        selected = EVENT_NONE
+      )
+      return()
+    }
+
+    events_df <- as.data.frame(events_data, stringsAsFactors = FALSE)
+
+    # Build the event-id -> games mapping. `games` is a list-column where each
+    # element is that event's populated games (a data.frame with _id + name).
+    gmap <- list()
+    for (i in seq_len(NROW(events_df))) {
+      ev_id <- events_df[["_id"]][i]
+      g <- events_data$games[[i]]
+      if (!is.null(g) && NROW(g) > 0) {
+        gdf <- as.data.frame(g, stringsAsFactors = FALSE)
+        gmap[[ev_id]] <- setNames(gdf[["_id"]], gdf[["name"]])
+      } else {
+        gmap[[ev_id]] <- setNames(character(0), character(0))
+      }
+    }
+    event_games_rv(gmap)
+
+    # Picker choices: "Not selected" first, then each event by name.
+    ev_choices <- c(
+      setNames(EVENT_NONE, "Not selected"),
+      setNames(events_df[["_id"]], events_df[["name"]])
+    )
+    events_choices_rv(ev_choices)
+
+    cur <- isolate(input$selected_event)
+    selected_val <- if (!is.null(cur) && cur %in% ev_choices) cur else EVENT_NONE
+    updatePickerInput(
+      session, "selected_event",
+      choices = ev_choices, selected = selected_val
+    )
+  })
+
+  # When the event selection changes, narrow the game picker to the event's
+  # games (or restore the full list when "Not selected").
+  observeEvent(input$selected_event, {
+    if (event_is_active()) {
+      gmap <- event_games_rv()[[input$selected_event]]
+      if (is.null(gmap)) gmap <- setNames(character(0), character(0))
+      cur <- isolate(input$selected_games)
+      selected_val <- if (!is.null(cur) && cur %in% gmap) cur
+                      else if (length(gmap) > 0) unname(gmap[1]) else character(0)
+      updatePickerInput(session, "selected_games",
+                        choices = gmap, selected = selected_val)
+    } else {
+      # Restore the full games list (the unfiltered view).
+      gmap <- games_choices_rv()
+      if (is.null(gmap)) gmap <- setNames(character(0), character(0))
+      cur <- isolate(input$selected_games)
+      selected_val <- if (!is.null(cur) && cur %in% gmap) cur
+                      else if (length(gmap) > 0) unname(gmap[1]) else character(0)
+      updatePickerInput(session, "selected_games",
+                        choices = gmap, selected = selected_val)
+    }
+  }, ignoreNULL = FALSE)
+
+  # Active-filter banner: shown only while an event is selected. States the
+  # event name + how many players are in the filtered view, and offers a
+  # one-click "Show all players" reset. An empty event shows a gentle hint.
+  output$event_filter_banner <- renderUI({
+    if (!event_is_active()) return(NULL)
+
+    ev_name <- names(events_choices_rv())[match(input$selected_event, events_choices_rv())]
+    if (is.na(ev_name)) ev_name <- "event"
+
+    tracks <- selected_game_tracks_rv()
+    n <- if (is.null(tracks) || NROW(tracks) == 0) 0 else NROW(tracks)
+
+    body <- if (n == 0) {
+      paste0("No plays collected for event “", ev_name,
+             "” yet. Share the event's QR PDF to start collecting.")
+    } else {
+      paste0("Showing ", n, " player", if (n == 1) "" else "s",
+             " from event “", ev_name, "” only.")
+    }
+
+    div(
+      style = "background:#e7f5fb; border:1px solid #b6e2f2; border-radius:6px; padding:8px 10px; margin-top:8px; font-size:13px;",
+      tags$span(style = "margin-right:6px;", "\U0001F50E"),
+      tags$span(body),
+      actionLink("clear_event_filter", "Show all players ✕",
+                 style = "display:block; margin-top:6px; font-weight:600;")
+    )
+  })
+
+  # "Show all players" reset → clears the event filter.
+  observeEvent(input$clear_event_filter, {
+    updatePickerInput(session, "selected_event", selected = EVENT_NONE)
+  })
+
+  #############---------------LOADING EVENTS END-----################
+
+
 
   
-  observeEvent(input$selected_games, {
+  # Re-fetch tracks when either the game OR the event filter changes. When an
+  # event is active the request is event-scoped (?eventId=), so only plays
+  # collected for that study are returned; otherwise the normal access-based
+  # view is returned.
+  observeEvent(list(input$selected_games, input$selected_event), {
     game_id <- input$selected_games
-    
+    req(game_id)
+
     # update the API URL with the selected game ID
     apiUrl <- paste0(apiURL_rv(), "/track/gametracks/", game_id)
-    
+    if (event_is_active()) {
+      apiUrl <- paste0(apiUrl, "?eventId=", input$selected_event)
+    }
+
     # Fetch game's tracks data from API
     # Note: The token is used for authentication, ensure it is valid
     games_tracks <- fetch_games_data_from_server(apiUrl, accessToken_rv())
-    
+
     # --- NEW: sort tracks by createdAt (newest first) ---
     if (!is.null(games_tracks) && !is.null(games_tracks$createdAt)) {
       ord <- order(games_tracks$createdAt, decreasing = TRUE)
       games_tracks <- games_tracks[ord, , drop = FALSE]
     }
-    
+
     # Store in reactive value
     selected_game_tracks_rv(games_tracks)
   })
@@ -2716,30 +2889,40 @@ server <- function(input, output, session) {
   
   observe({
     tracks_data <- selected_game_tracks_rv()
-    
-    if (!is.null(tracks_data)) {
-      # (tracks_data is already sorted above, but this keeps it robust)
-      if (!is.null(tracks_data$createdAt)) {
-        ord <- order(tracks_data$createdAt, decreasing = TRUE)
-        tracks_data <- tracks_data[ord, , drop = FALSE]
-      }
-      
-      # Labels: "Player - createdAt"
-      choices <- setNames(
-        tracks_data[["_id"]],
-        paste0(tracks_data$players, " - ", tracks_data$createdAt)
-      )
-      
-      # Save mapping for reuse
-      choices_rv(choices)
-      
-      updatePickerInput(
-        session, "selected_files",
-        choices = choices
-      )
-      
+
+    # No tracks for this selection (e.g. an event with no plays yet, or a game
+    # with none): clear the player picker. Without this guard, building choices
+    # from a missing `_id` column calls setNames(NULL, ...) and errors.
+    if (is.null(tracks_data) || NROW(tracks_data) == 0 ||
+        is.null(tracks_data[["_id"]])) {
+      choices_rv(setNames(character(0), character(0)))
+      updatePickerInput(session, "selected_files",
+                        choices = character(0), selected = character(0))
       output$info_download <- renderText({ "" })
+      return()
     }
+
+    # (tracks_data is already sorted above, but this keeps it robust)
+    if (!is.null(tracks_data$createdAt)) {
+      ord <- order(tracks_data$createdAt, decreasing = TRUE)
+      tracks_data <- tracks_data[ord, , drop = FALSE]
+    }
+
+    # Labels: "Player - createdAt"
+    choices <- setNames(
+      tracks_data[["_id"]],
+      paste0(tracks_data$players, " - ", tracks_data$createdAt)
+    )
+
+    # Save mapping for reuse
+    choices_rv(choices)
+
+    updatePickerInput(
+      session, "selected_files",
+      choices = choices
+    )
+
+    output$info_download <- renderText({ "" })
   })
   
   
