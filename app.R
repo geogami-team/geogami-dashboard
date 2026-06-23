@@ -537,17 +537,6 @@ ui <- page_sidebar(
   
   sidebar = sidebar(
     width = "300px",
-    radioButtons("theme", "Choose Theme:",
-                 choices = c("Light", "Dark"),
-                 inline = TRUE,
-                 selected = "Light"),
-
-    div(
-      style = "text-align: left; color: #888; font-size: 12px; margin-bottom: 10px;",
-
-      # Latest GitHub release version + last commit time on main (see build_version_footer)
-      HTML(version_footer)
-    ),
     # Upload JSON file section
     div(style = "border: 1px solid #ccc; padding: 10px; margin-bottom: 5px; border-radius: 5px;",
         fileInput("uploaded_json_file", "Upload JSON file:", accept = ".json", multiple = FALSE),
@@ -605,21 +594,25 @@ ui <- page_sidebar(
           uiOutput("share_track_button_ui")
       )
     ),
-    
-    
+
     #filter 2 - ID - 2nd div
     # div(style = "border: 1px solid #ccc; padding: 10px; margin-bottom: 15px; border-radius: 8px;",
     #     numericInput("num_value", "Enter a task number:", value = 1, min = 1, max = 1)
     # ),
-    
+
+    radioButtons("theme", "Choose Theme:",
+                 choices = c("Light", "Dark"),
+                 inline = TRUE,
+                 selected = "Light"),
+
     div(
       style = "text-align: left; color: #888; font-size: 12px;",
-      
+
       # Latest GitHub release version + last commit time on main (see build_version_footer)
       HTML(version_footer)
     )
   ),
-  
+
   # Main tabs
   tabsetPanel(
     tabPanel(
