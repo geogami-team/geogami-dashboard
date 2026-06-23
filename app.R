@@ -16,6 +16,38 @@ iris$Species <- NULL
 # Define the directory where JSON files are stored
 json_dir <- getwd()  # or set to your specific directory, e.g., "data/json"
 
+# Build the footer string shown in the sidebar: the latest GitHub release
+# version plus the date/time of the last commit on the main branch. Computed
+# once at app startup; falls back gracefully if GitHub is unreachable.
+build_version_footer <- function(repo = "origami-team/geogami-dashboard") {
+  github_get <- function(path) {
+    resp <- httr::GET(
+      paste0("https://api.github.com/repos/", repo, path),
+      httr::user_agent("geogami-dashboard"),
+      httr::add_headers(Accept = "application/vnd.github+json")
+    )
+    httr::stop_for_status(resp)
+    jsonlite::fromJSON(httr::content(resp, as = "text", encoding = "UTF-8"))
+  }
+
+  tryCatch({
+    # Latest release tag, e.g. "v2.0.0" -> "2.0.0"
+    version <- sub("^v", "", github_get("/releases/latest")$tag_name)
+
+    # Timestamp of the last commit on main (committer date, ISO-8601 UTC)
+    commit_date <- github_get("/commits/main")$commit$committer$date
+    commit_time <- as.POSIXct(commit_date, format = "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
+
+    paste0("Version ", version, " - ",
+           format(commit_time, "%d.%m.%y %H:%M:%S", tz = "Europe/Berlin"))
+  }, error = function(e) {
+    message("Could not fetch version info from GitHub: ", conditionMessage(e))
+    "Version unavailable"
+  })
+}
+
+version_footer <- build_version_footer()
+
 # Render a stored free-DRAW FeatureCollection onto a leaflet map, dispatching by
 # geometry type. `feats` is events$answer$drawing$features[[okIdx]] as parsed by
 # jsonlite (a data.frame with $type and a nested $geometry frame). Point coords
@@ -561,10 +593,6 @@ ui <- page_sidebar(
   
   sidebar = sidebar(
     width = "300px",
-    radioButtons("theme", "Choose Theme:",
-                 choices = c("Light", "Dark"),
-                 inline = TRUE,
-                 selected = "Light"),
     # Upload JSON file section
     div(style = "border: 1px solid #ccc; padding: 10px; margin-bottom: 5px; border-radius: 5px;",
         fileInput("uploaded_json_file", "Upload JSON file:", accept = ".json", multiple = FALSE),
@@ -622,21 +650,25 @@ ui <- page_sidebar(
           uiOutput("share_track_button_ui")
       )
     ),
-    
-    
+
     #filter 2 - ID - 2nd div
     # div(style = "border: 1px solid #ccc; padding: 10px; margin-bottom: 15px; border-radius: 8px;",
     #     numericInput("num_value", "Enter a task number:", value = 1, min = 1, max = 1)
     # ),
-    
+
+    radioButtons("theme", "Choose Theme:",
+                 choices = c("Light", "Dark"),
+                 inline = TRUE,
+                 selected = "Light"),
+
     div(
       style = "text-align: left; color: #888; font-size: 12px;",
-      
-      # "Version 1.5.5 - 12:33 24.10.2025"
-      HTML(paste0("Version 1.5.5 - " , format(Sys.time(), "%d.%m.%y %H:%M:%S")))      
+
+      # Latest GitHub release version + last commit time on main (see build_version_footer)
+      HTML(version_footer)
     )
   ),
-  
+
   # Main tabs
   tabsetPanel(
     tabPanel(
