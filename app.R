@@ -2805,13 +2805,19 @@ server <- function(input, output, session) {
 
     tracks <- selected_game_tracks_rv()
     n <- if (is.null(tracks) || NROW(tracks) == 0) 0 else NROW(tracks)
+    game_selected <- !is.null(input$selected_games) && nzchar(input$selected_games)
 
-    body <- if (n == 0) {
-      paste0("No plays collected for event “", ev_name,
+    # The count is scoped to the SELECTED GAME within the event (not the whole
+    # event), so the wording says "for this game" to avoid implying an
+    # event-wide total.
+    body <- if (!game_selected) {
+      paste0("Filtered to event “", ev_name, "”. Select a game to see its plays.")
+    } else if (n == 0) {
+      paste0("No plays for this game in event “", ev_name,
              "” yet. Share the event's QR PDF to start collecting.")
     } else {
       paste0("Showing ", n, " player", if (n == 1) "" else "s",
-             " from event “", ev_name, "” only.")
+             " for this game in event “", ev_name, "”.")
     }
 
     div(
@@ -7127,6 +7133,135 @@ server <- function(input, output, session) {
 
         if (result$status == 200) {
           shared_emails_rv(result$data$sharedWith)
+          showNotification(paste0("Removed ", email_to_remove), type = "message")
+        } else {
+          showNotification("Could not remove user.", type = "error")
+        }
+      }, ignoreInit = TRUE, once = TRUE)
+    })
+  })
+
+
+  # ── Share an event ──────────────────────────────────────────────────
+  # Mirrors the game-share flow, but targets /event/:id/share. Sharing an event
+  # makes the recipient a co-editor (can add/remove games) and lets them view
+  # the event's tracks. Owner-only on the server (delete/share stay owner-only).
+
+  # Show the share-event button only when a real event is selected.
+  output$share_event_button_ui <- renderUI({
+    req(event_is_active())
+    div(
+      style = "margin-bottom: 10px;",
+      actionButton("open_share_event_modal", "Share event",
+                   icon = icon("share-alt"),
+                   style = "width: 100%;")
+    )
+  })
+
+  # Open the share-event modal and load the current shared list.
+  observeEvent(input$open_share_event_modal, {
+    req(event_is_active(), accessToken_rv(), apiURL_rv())
+
+    event_id <- input$selected_event
+    url <- paste0(apiURL_rv(), "/event/", event_id, "/share")
+    result <- api_get(url, accessToken_rv())
+
+    if (result$status == 200 && !is.null(result$data$sharedWith)) {
+      event_shared_emails_rv(result$data$sharedWith)
+    } else {
+      event_shared_emails_rv(character(0))
+    }
+
+    showModal(modalDialog(
+      title = "Share event",
+      size = "m",
+      easyClose = TRUE,
+      p("Share this event with other GeoGami users. They become co-editors (can add or remove games) and can view the event's tracks."),
+      div(
+        style = "display: flex; gap: 8px; align-items: flex-end;",
+        div(style = "flex: 1;",
+            textInput("share_event_email_input", "Email address:", placeholder = "user@example.com")
+        ),
+        actionButton("share_event_add_btn", "Share", icon = icon("plus"),
+                     class = "btn-primary", style = "margin-bottom: 15px;")
+      ),
+      uiOutput("shared_event_list_ui"),
+      footer = modalButton("Close")
+    ))
+  })
+
+  # Render the current shared-with list with per-email revoke buttons.
+  output$shared_event_list_ui <- renderUI({
+    emails <- event_shared_emails_rv()
+    if (length(emails) == 0) {
+      return(p(style = "color: #888;", "Not shared with anyone yet."))
+    }
+    tags$div(
+      tags$h6(paste0("Shared with (", length(emails), "):")),
+      tags$ul(
+        style = "list-style: none; padding-left: 0;",
+        lapply(seq_along(emails), function(i) {
+          tags$li(
+            style = "display: flex; align-items: center; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #eee;",
+            tags$span(emails[i]),
+            actionButton(
+              inputId = paste0("remove_event_share_", i),
+              label = NULL,
+              icon = icon("times"),
+              class = "btn-sm btn-outline-danger",
+              style = "padding: 2px 8px;"
+            )
+          )
+        })
+      )
+    )
+  })
+
+  # Add an email to the event's sharedWith.
+  observeEvent(input$share_event_add_btn, {
+    req(event_is_active(), accessToken_rv(), apiURL_rv())
+
+    email <- trimws(tolower(input$share_event_email_input))
+    if (!grepl("@", email)) {
+      showNotification("Please enter a valid email address.", type = "warning")
+      return()
+    }
+
+    event_id <- input$selected_event
+    url <- paste0(apiURL_rv(), "/event/", event_id, "/share")
+    result <- api_request(url, accessToken_rv(), body = list(emails = list(email)), method = "POST")
+
+    server_msg <- if (!is.null(result$data$message)) result$data$message else ""
+    if (result$status == 200) {
+      event_shared_emails_rv(result$data$sharedWith)
+      updateTextInput(session, "share_event_email_input", value = "")
+      msg <- if (nzchar(server_msg)) server_msg else paste0("Shared with ", email)
+      showNotification(msg, type = "message", duration = 6)
+    } else if (result$status == 400 && nzchar(server_msg)) {
+      showNotification(server_msg, type = "warning", duration = 8)
+    } else {
+      msg <- if (nzchar(server_msg)) server_msg else "Could not share."
+      showNotification(msg, type = "error")
+    }
+  })
+
+  # Per-email "X" revoke buttons: DELETE /event/:id/share.
+  observe({
+    emails <- event_shared_emails_rv()
+    lapply(seq_along(emails), function(i) {
+      btn_id <- paste0("remove_event_share_", i)
+      observeEvent(input[[btn_id]], {
+        req(event_is_active(), accessToken_rv(), apiURL_rv())
+
+        email_to_remove <- emails[i]
+        event_id <- input$selected_event
+        url <- paste0(apiURL_rv(), "/event/", event_id, "/share")
+        result <- api_request(url, accessToken_rv(),
+                              body = list(emails = list(email_to_remove)),
+                              method = "DELETE")
+
+        if (result$status == 200) {
+          event_shared_emails_rv(result$data$sharedWith)
           showNotification(paste0("Removed ", email_to_remove), type = "message")
         } else {
           showNotification("Could not remove user.", type = "error")
