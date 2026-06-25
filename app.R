@@ -208,6 +208,26 @@ ui <- page_sidebar(
     .item {
       word-wrap: anywhere;
     }
+    /* RW / VE badges in the games picker + legend. Styled via a class (not
+       inline style) because bootstrap-select's HTML sanitizer keeps class=
+       but strips style=. */
+    .geo-badge {
+      display: inline-block;
+      width: 26px;
+      height: 16px;
+      line-height: 16px;
+      text-align: center;
+      padding: 0;
+      box-sizing: border-box;
+      border-radius: 3px;
+      font-size: 9px;
+      font-weight: 600;
+      color: #fff !important;
+      margin-right: 6px;
+      vertical-align: middle;
+    }
+    .geo-badge-ve { background: #6f42c1 !important; }
+    .geo-badge-rw { background: #198754 !important; }
     pre {
       background-color: #F0F0F0 !important;
       color: #333 !important;
@@ -587,7 +607,22 @@ ui <- page_sidebar(
               `none-selected-text` = "Select a player",
               `width` = '100%',
               container = FALSE,
-              size = 10
+              size = 10,
+              sanitize = FALSE  # allow the colored RW/VE badge HTML in options
+            )
+          ),
+          # Legend: what the RW / VE badges mean. A wrapping flex row so each
+          # badge+label pair stays together but drops to the next line on
+          # narrow (responsive) widths.
+          div(
+            style = "margin-top: 6px; font-size: 11px; color: #555; display: flex; flex-wrap: wrap; gap: 2px 10px;",
+            tags$span(
+              style = "white-space: nowrap;",
+              tags$span(class = "geo-badge geo-badge-rw", "RW"), "Real world"
+            ),
+            tags$span(
+              style = "white-space: nowrap;",
+              tags$span(class = "geo-badge geo-badge-ve", "VE"), "Virtual env."
             )
           )
       )
@@ -2336,6 +2371,42 @@ server <- function(input, output, session) {
   
   
   games_choices_rv <- reactiveVal()   # store mapping of game_id -> game_name (CREATING THIS FOR zip file that gets downloaded, this is used for giving the right name to the zip file that gets downloaded)
+  # Maps game id -> display label with a "[RW]"/"[VE]" prefix. Kept separate
+  # from games_choices_rv (which must stay clean for filenames/headers) and
+  # used to relabel the games picker wherever its choices are (re)built.
+  game_labels_rv <- reactiveVal(setNames(character(0), character(0)))
+
+  # Relabel a picker choice vector (values = game ids) so each option shows its
+  # "[RW]"/"[VE]" prefix. Falls back to the original label when a game id has no
+  # known environment (e.g. a shared game not in the user's own list).
+  # This text prefix is also the fallback if the colored badge HTML is stripped.
+  relabel_games <- function(choice_vec) {
+    if (is.null(choice_vec) || length(choice_vec) == 0) return(choice_vec)
+    labels <- game_labels_rv()
+    ids <- unname(choice_vec)
+    new_names <- unname(labels[ids])
+    missing <- is.na(new_names)
+    new_names[missing] <- names(choice_vec)[missing]
+    setNames(choice_vec, new_names)
+  }
+
+  # Maps game id -> HTML option content with a colored RW/VE badge. Used as
+  # choicesOpt$content so the badge color shows wherever the picker is built.
+  game_content_rv <- reactiveVal(setNames(character(0), character(0)))
+
+  # Build the choicesOpt$content vector aligned to a picker choice vector
+  # (values = game ids). Falls back to the (escaped, already [RW]/[VE]-prefixed)
+  # option label when a game id has no known badge.
+  game_contents <- function(choice_vec) {
+    if (is.null(choice_vec) || length(choice_vec) == 0) return(NULL)
+    contents <- game_content_rv()
+    ids <- unname(choice_vec)
+    out <- unname(contents[ids])
+    missing <- is.na(out)
+    out[missing] <- htmltools::htmlEscape(names(choice_vec)[missing])
+    out
+  }
+
   # Store access token reactively
   accessToken_rv <- reactiveVal()
   track_data_rv <- reactiveVal()
@@ -2691,15 +2762,46 @@ server <- function(input, output, session) {
           games_df <- games_df[order(games_df$created_dt, decreasing = TRUE), , drop = FALSE]
         }
 
-        # Build picker choices (label=name, value=id) in this sorted order
+        # Build picker choices (label=name, value=id) in this sorted order.
+        # Keep this mapping CLEAN (name only) — it is reused for the download
+        # zip filename and the selected-game header.
         mapping <- setNames(games_df[["_id"]], games_df$name)
         games_choices_rv(mapping)
+
+        # Prefix each picker label with a plain-text [RW] / [VE] marker so the
+        # environment is visible in the dropdown. isVRWorld == TRUE -> virtual
+        # environment (VE); anything else (FALSE / missing) -> real world (RW).
+        is_ve <- if ("isVRWorld" %in% names(games_df)) {
+          !is.na(games_df$isVRWorld) & as.logical(games_df$isVRWorld)
+        } else {
+          rep(FALSE, nrow(games_df))
+        }
+        picker_labels <- paste0("[", ifelse(is_ve, "VE", "RW"), "] ", games_df$name)
+        # id -> labeled name, used to relabel the picker wherever it is rebuilt
+        # (e.g. when the event filter restores or narrows the games list).
+        game_labels_rv(setNames(picker_labels, games_df[["_id"]]))
+        picker_choices <- setNames(games_df[["_id"]], picker_labels)
+
+        # id -> HTML content with the colored RW/VE badge (name is escaped).
+        game_badges <- ifelse(
+          is_ve,
+          "<span class='geo-badge geo-badge-ve'>VE</span>",
+          "<span class='geo-badge geo-badge-rw'>RW</span>"
+        )
+        game_content_rv(setNames(
+          paste0(game_badges, htmltools::htmlEscape(games_df$name)),
+          games_df[["_id"]]
+        ))
 
         # Preserve current selection if still valid, else default to newest
         cur <- isolate(input$selected_games)
         selected_val <- if (!is.null(cur) && cur %in% mapping) cur else games_df[["_id"]][1]
 
-        updatePickerInput(session, "selected_games", choices = mapping, selected = selected_val)
+        updatePickerInput(
+          session, "selected_games",
+          choices = picker_choices, selected = selected_val,
+          choicesOpt = list(content = game_contents(picker_choices))
+        )
 
         # Debug print to confirm ordering
         message("=== Games (newest -> oldest) ===")
@@ -2781,7 +2883,8 @@ server <- function(input, output, session) {
       selected_val <- if (!is.null(cur) && cur %in% gmap) cur
                       else if (length(gmap) > 0) unname(gmap[1]) else character(0)
       updatePickerInput(session, "selected_games",
-                        choices = gmap, selected = selected_val)
+                        choices = relabel_games(gmap), selected = selected_val,
+                        choicesOpt = list(content = game_contents(gmap)))
     } else {
       # Restore the full games list (the unfiltered view).
       gmap <- games_choices_rv()
@@ -2790,7 +2893,8 @@ server <- function(input, output, session) {
       selected_val <- if (!is.null(cur) && cur %in% gmap) cur
                       else if (length(gmap) > 0) unname(gmap[1]) else character(0)
       updatePickerInput(session, "selected_games",
-                        choices = gmap, selected = selected_val)
+                        choices = relabel_games(gmap), selected = selected_val,
+                        choicesOpt = list(content = game_contents(gmap)))
     }
   }, ignoreNULL = FALSE)
 
