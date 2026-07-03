@@ -756,17 +756,7 @@ ui <- page_sidebar(
         
         uiOutput("player_info_box"),
         
-        div(
-          style = "min-width: 280px; text-align: right;",
-          switchInput(
-            inputId = "advanced_direction_analysis_all",
-            label = "Advanced Direction Task Analysis",
-            value = FALSE,
-            onLabel = "On",
-            offLabel = "Off",
-            size = "small"
-          )
-        )
+        uiOutput("advanced_direction_analysis_all_ui")
       ),
       
       DTOutput('iris_data'),
@@ -848,17 +838,7 @@ ui <- page_sidebar(
             
             h4("Direction Task Comparison", style = "margin: 0;"),
             
-            div(
-              style = "min-width: 280px; text-align: right;",
-              switchInput(
-                inputId = "advanced_direction_analysis_compare",
-                label = "Advanced Direction Task Analysis",
-                value = FALSE,
-                onLabel = "On",
-                offLabel = "Off",
-                size = "small"
-              )
-            )
+            uiOutput("advanced_direction_analysis_compare_ui")
           ),
           
           tableOutput('cmp_table2'),
@@ -2540,15 +2520,84 @@ server <- function(input, output, session) {
     if (is.null(df) || nrow(df) == 0) return(df)
     df[, setdiff(names(df), advanced_direction_cols), drop = FALSE]
   }
+
+  
+  selected_game_is_virtual <- reactive({
+    req(input$selected_games)
+    
+    env_map <- game_is_ve_rv()
+    
+    if (is.null(env_map) || length(env_map) == 0) {
+      return(FALSE)
+    }
+    
+    val <- env_map[[as.character(input$selected_games)]]
+    
+    if (is.null(val) || length(val) == 0 || is.na(val)) {
+      return(FALSE)
+    }
+    
+    isTRUE(val)
+  })
+  
+  
+  output$advanced_direction_analysis_all_ui <- renderUI({
+    if (!isTRUE(selected_game_is_virtual())) {
+      return(NULL)
+    }
+    
+    div(
+      style = "min-width: 280px; text-align: right;",
+      switchInput(
+        inputId = "advanced_direction_analysis_all",
+        label = "Advanced Direction Task Analysis",
+        value = FALSE,
+        onLabel = "On",
+        offLabel = "Off",
+        size = "small"
+      )
+    )
+  })
+  
+  
+  
+  output$advanced_direction_analysis_compare_ui <- renderUI({
+    if (!isTRUE(selected_game_is_virtual())) {
+      return(NULL)
+    }
+    
+    div(
+      style = "min-width: 280px; text-align: right;",
+      switchInput(
+        inputId = "advanced_direction_analysis_compare",
+        label = "Advanced Direction Task Analysis",
+        value = FALSE,
+        onLabel = "On",
+        offLabel = "Off",
+        size = "small"
+      )
+    )
+  })
+  
   
   advanced_direction_enabled <- reactive({
-    isTRUE(input$advanced_direction_analysis_all) ||
-      isTRUE(input$advanced_direction_analysis_compare)
+    isTRUE(selected_game_is_virtual()) &&
+      (
+        isTRUE(input$advanced_direction_analysis_all) ||
+          isTRUE(input$advanced_direction_analysis_compare)
+      )
   })
+  
+  
+  observeEvent(selected_game_is_virtual(), {
+    if (!isTRUE(selected_game_is_virtual())) {
+      updateSwitchInput(session, "advanced_direction_analysis_all", value = FALSE)
+      updateSwitchInput(session, "advanced_direction_analysis_compare", value = FALSE)
+    }
+  }, ignoreInit = FALSE)
+  
+  
   ######ENDS - Helper function for advanced direction task toggle buttons#####
-  
-  
-  
   
   
   # Store selected game track data reactively
@@ -2563,6 +2612,9 @@ server <- function(input, output, session) {
   # Maps game id -> display label with a "[RW]"/"[VE]" prefix. Kept separate
   # from games_choices_rv (which must stay clean for filenames/headers) and
   # used to relabel the games picker wherever its choices are (re)built.
+  
+  game_is_ve_rv <- reactiveVal(setNames(logical(0), character(0)))
+  
   game_labels_rv <- reactiveVal(setNames(character(0), character(0)))
 
   # Relabel a picker choice vector (values = game ids) so each option shows its
@@ -2965,6 +3017,9 @@ server <- function(input, output, session) {
         } else {
           rep(FALSE, nrow(games_df))
         }
+        
+        game_is_ve_rv(setNames(is_ve, games_df[["_id"]]))
+        
         picker_labels <- paste0("[", ifelse(is_ve, "VE", "RW"), "] ", games_df$name)
         # id -> labeled name, used to relabel the picker wherever it is rebuilt
         # (e.g. when the event filter restores or narrows the games list).
