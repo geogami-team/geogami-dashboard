@@ -3695,6 +3695,22 @@ server <- function(input, output, session) {
   #####Big table code
   df_react <- reactiveVal()
   
+  # Keeps the selected "Show X entries" value when the All tasks table is rebuilt
+  iris_data_page_length <- function(default = 10) {
+    len <- suppressWarnings(as.integer(isolate(input$iris_data_page_length)))
+    
+    if (
+      is.null(len) ||
+      length(len) == 0 ||
+      is.na(len) ||
+      !(len %in% c(10L, 25L, 50L, 100L))
+    ) {
+      return(default)
+    }
+    
+    len
+  }
+  
   observeEvent(list(current_single_player(), num_value_num()), {
     req(current_single_player())
     req(num_value_num() != 0 && num_value_num() > 0)
@@ -4243,10 +4259,16 @@ server <- function(input, output, session) {
         escape = setdiff(names(df_show), "Assignment"),
         class = "compact stripe hover",
         options = list(
-          pageLength = 10,
+          pageLength = iris_data_page_length(),
+          lengthMenu = c(10, 25, 50, 100),
           ordering = FALSE,
           autoWidth = FALSE
-        )
+        ),
+        callback = DT::JS("
+      table.on('length.dt', function(e, settings, len) {
+        Shiny.setInputValue('iris_data_page_length', len, {priority: 'event'});
+      });
+    ")
       )
     })
     
@@ -6069,10 +6091,16 @@ server <- function(input, output, session) {
         escape = setdiff(names(df_show), "Assignment"),
         class = "compact stripe hover",
         options = list(
-          pageLength = 10,
+          pageLength = iris_data_page_length(),
+          lengthMenu = c(10, 25, 50, 100),
           ordering = FALSE,
           autoWidth = FALSE
-        )
+        ),
+        callback = DT::JS("
+      table.on('length.dt', function(e, settings, len) {
+        Shiny.setInputValue('iris_data_page_length', len, {priority: 'event'});
+      });
+    ")
       )
     })
     
