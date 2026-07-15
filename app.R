@@ -778,8 +778,43 @@ ui <- page_sidebar(
       ),
       textOutput("mapLegend"),
       div(id = "map_container", leafletOutput("map"), style = "margin-top: 5px"),
-      div(style = "border: 0px solid #ccc; padding: 10px; margin-top: 15px; border-radius: 8px;",
-          downloadButton('downloadMap','Save the map'), full_screen = TRUE)
+      div(
+        style = "display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; padding: 10px; margin-top: 5px;",
+        downloadButton('downloadMap', 'Save the map'),
+        div(
+          style = "border: 1px solid var(--bs-border-color, #ccc); border-radius: 6px; padding: 8px 12px; min-width: 360px;",
+          tags$div("Map legend", style = "font-weight: 600; margin-bottom: 6px;"),
+          div(
+            style = "display: grid; grid-template-columns: repeat(2, minmax(155px, 1fr)); gap: 6px 16px;",
+            div(
+              style = "display: flex; align-items: center; gap: 8px;",
+              tags$span("\u2192", style = "display: inline-block; width: 28px; color: blue; font-size: 28px; font-weight: 700; line-height: 20px;"),
+              tags$span("Player's direction")
+            ),
+            div(
+              style = "display: flex; align-items: center; gap: 8px;",
+              tags$span("\u2192", style = "display: inline-block; width: 28px; color: green; font-size: 28px; font-weight: 700; line-height: 20px;"),
+              tags$span("Correct direction")
+            ),
+            div(
+              style = "display: flex; align-items: center; gap: 8px;",
+              tags$img(
+                src = "https://raw.githubusercontent.com/origami-team/origami/master/src/assets/icons/marker-editor.png",
+                width = "20", height = "20", alt = "Blue marker"
+              ),
+              tags$span("Player's position")
+            ),
+            div(
+              style = "display: flex; align-items: center; gap: 8px;",
+              tags$img(
+                src = "https://raw.githubusercontent.com/origami-team/origami/master/src/assets/icons/marker-editor-solution.png",
+                width = "20", height = "20", alt = "Green marker"
+              ),
+              tags$span("Correct position")
+            )
+          )
+        )
+      )
     ),
     tabPanel(
       'Pictures',
