@@ -6955,7 +6955,18 @@ server <- function(input, output, session) {
   
   output$map <- renderLeaflet({
     req(map_rv())
-    map_rv()
+    map_rv() %>%
+      htmlwidgets::onRender("
+        function(el, x) {
+          var map = (this && typeof this.getMap === 'function')
+            ? this.getMap()
+            : this;
+
+          if (map && map.zoomControl) {
+            map.zoomControl.setPosition('bottomleft');
+          }
+        }
+      ")
   })
   
   
