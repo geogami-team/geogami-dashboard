@@ -613,11 +613,7 @@ ui <- page_sidebar(
   
   sidebar = sidebar(
     width = "300px",
-    # Upload JSON file section
-    div(style = "border: 1px solid #ccc; padding: 10px; margin-bottom: 5px; border-radius: 5px;",
-        fileInput("uploaded_json_file", "Upload JSON file:", accept = ".json", multiple = FALSE),
-    ),
-    
+
     #filter 0 - event selection (above game selection)
     conditionalPanel(
       condition = "typeof window.location.search.match(/token=([^&]+)/) !== 'undefined' && window.location.search.match(/token=([^&]+)/) !== null",
@@ -660,7 +656,7 @@ ui <- page_sidebar(
             options = list(
               `actions-box` = TRUE,
               `live-search` = FALSE,
-              `none-selected-text` = "Select a player",
+              `none-selected-text` = "Select a game",
               `width` = '100%',
               container = FALSE,
               size = 10,
@@ -714,6 +710,11 @@ ui <- page_sidebar(
           # Per-track share button — appears when exactly one track is selected.
           uiOutput("share_track_button_ui")
       )
+    ),
+
+    # Upload JSON file section
+    div(style = "border: 1px solid #ccc; padding: 10px; margin-bottom: 5px; border-radius: 5px;",
+        fileInput("uploaded_json_file", "Upload JSON file:", accept = ".json", multiple = FALSE),
     ),
 
     #filter 2 - ID - 2nd div
@@ -777,8 +778,43 @@ ui <- page_sidebar(
       ),
       textOutput("mapLegend"),
       div(id = "map_container", leafletOutput("map"), style = "margin-top: 5px"),
-      div(style = "border: 0px solid #ccc; padding: 10px; margin-top: 15px; border-radius: 8px;",
-          downloadButton('downloadMap','Save the map'), full_screen = TRUE)
+      div(
+        style = "display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; padding: 10px; margin-top: 5px;",
+        downloadButton('downloadMap', 'Save the map'),
+        div(
+          style = "border: 1px solid var(--bs-border-color, #ccc); border-radius: 6px; padding: 8px 12px; min-width: 360px;",
+          tags$div("Map legend", style = "font-weight: 600; margin-bottom: 6px;"),
+          div(
+            style = "display: grid; grid-template-columns: repeat(2, minmax(155px, 1fr)); gap: 6px 16px;",
+            div(
+              style = "display: flex; align-items: center; gap: 8px;",
+              tags$span("\u2192", style = "display: inline-block; width: 28px; color: blue; font-size: 28px; font-weight: 700; line-height: 20px;"),
+              tags$span("Player's direction")
+            ),
+            div(
+              style = "display: flex; align-items: center; gap: 8px;",
+              tags$span("\u2192", style = "display: inline-block; width: 28px; color: green; font-size: 28px; font-weight: 700; line-height: 20px;"),
+              tags$span("Correct direction")
+            ),
+            div(
+              style = "display: flex; align-items: center; gap: 8px;",
+              tags$img(
+                src = "https://raw.githubusercontent.com/origami-team/origami/master/src/assets/icons/marker-editor.png",
+                width = "20", height = "20", alt = "Blue marker"
+              ),
+              tags$span("Player's position")
+            ),
+            div(
+              style = "display: flex; align-items: center; gap: 8px;",
+              tags$img(
+                src = "https://raw.githubusercontent.com/origami-team/origami/master/src/assets/icons/marker-editor-solution.png",
+                width = "20", height = "20", alt = "Green marker"
+              ),
+              tags$span("Correct position")
+            )
+          )
+        )
+      )
     ),
     tabPanel(
       'Pictures',
@@ -6954,7 +6990,18 @@ server <- function(input, output, session) {
   
   output$map <- renderLeaflet({
     req(map_rv())
-    map_rv()
+    map_rv() %>%
+      htmlwidgets::onRender("
+        function(el, x) {
+          var map = (this && typeof this.getMap === 'function')
+            ? this.getMap()
+            : this;
+
+          if (map && map.zoomControl) {
+            map.zoomControl.setPosition('bottomleft');
+          }
+        }
+      ")
   })
   
   
