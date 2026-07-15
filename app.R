@@ -613,11 +613,7 @@ ui <- page_sidebar(
   
   sidebar = sidebar(
     width = "300px",
-    # Upload JSON file section
-    div(style = "border: 1px solid #ccc; padding: 10px; margin-bottom: 5px; border-radius: 5px;",
-        fileInput("uploaded_json_file", "Upload JSON file:", accept = ".json", multiple = FALSE),
-    ),
-    
+
     #filter 0 - event selection (above game selection)
     conditionalPanel(
       condition = "typeof window.location.search.match(/token=([^&]+)/) !== 'undefined' && window.location.search.match(/token=([^&]+)/) !== null",
@@ -660,7 +656,7 @@ ui <- page_sidebar(
             options = list(
               `actions-box` = TRUE,
               `live-search` = FALSE,
-              `none-selected-text` = "Select a player",
+              `none-selected-text` = "Select a game",
               `width` = '100%',
               container = FALSE,
               size = 10,
@@ -714,6 +710,11 @@ ui <- page_sidebar(
           # Per-track share button — appears when exactly one track is selected.
           uiOutput("share_track_button_ui")
       )
+    ),
+
+    # Upload JSON file section
+    div(style = "border: 1px solid #ccc; padding: 10px; margin-bottom: 5px; border-radius: 5px;",
+        fileInput("uploaded_json_file", "Upload JSON file:", accept = ".json", multiple = FALSE),
     ),
 
     #filter 2 - ID - 2nd div
