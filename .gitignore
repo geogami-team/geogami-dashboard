@@ -1,0 +1,31 @@
+# --- R / RStudio ---
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+*.Rproj
+.Renviron
+
+# R package / renv caches
+renv/library/
+renv/local/
+renv/cellar/
+renv/lock/
+renv/python/
+renv/staging/
+
+# shiny / rsconnect deploy artifacts
+rsconnect/
+
+# --- macOS ---
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# --- Editors ---
+.vscode/
+.idea/
+
+# --- Logs / temp ---
+*.log
+*.tmp

@@ -175,7 +175,7 @@ ui <- page_sidebar(
     tags$img(src = "https://geogami.ifgi.de/wp-content/uploads/2020/03/Unbenannt-7.png", height = "60px"),
     tags$div(
       tags$h1("Welcome to the dashboard!", style = "margin: 0; font-size: 24px;"),
-      tags$a("app.geogami.ifgi.de", href = "https://app.geogami.ifgi.de/", style = "font-size: 14px; color: white;")
+      tags$a("app.geogami.uni-muenster.de", href = "https://app.geogami.uni-muenster.de/", style = "font-size: 14px; color: white;")
     )
   ),
   
