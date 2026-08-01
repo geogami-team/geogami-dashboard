@@ -1,0 +1,548 @@
+/* ============================================================
+   GeoGami dashboard theme
+   Loaded from tags$head() in app.R (Shiny auto-serves www/).
+   Targets the real bslib / shinyWidgets selectors in app.R.
+
+   Adjusted from the design handoff for the real DOM:
+   - sidebar boxes matched with a descendant selector (bslib wraps
+     sidebar children in .sidebar-content, and the app's boxes sit
+     inside conditionalPanel divs)
+   - dark bootstrap-select styling scoped to the sidebar; main-area
+     pickers (Map / Pictures / Compare tabs) get the light card look
+   ============================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+:root {
+  --gg-ink:        #0d2f38;   /* primary text            */
+  --gg-ink-soft:   #5e7479;   /* secondary text          */
+  --gg-muted:      #8a9ca0;   /* labels                  */
+  --gg-accent:     #18d0e6;   /* cyan accent             */
+  --gg-sidebar:    #08323d;   /* dark teal sidebar       */
+  --gg-sidebar-2:  #0c3b46;   /* dropdown / hover panel  */
+  --gg-bg:         #eef1f3;   /* app background          */
+  --gg-card:       #ffffff;
+  --gg-border:     #e4eaeb;
+  --gg-radius:     14px;
+}
+
+/* ---------- base ---------- */
+body, .bslib-page-sidebar {
+  font-family: 'IBM Plex Sans', system-ui, sans-serif;
+  background: var(--gg-bg);
+  color: var(--gg-ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- header bar (step 1) ---------- */
+/* Flat dark teal instead of the classic gradient. The GeoGami logo wordmark
+   is white, so the header must stay dark until the header content itself is
+   rebuilt (mockup's white header carries the game title instead of a logo). */
+.bslib-page-sidebar .navbar {
+  background: var(--gg-sidebar) !important;
+  border-bottom: 1px solid rgba(0,0,0,.25);
+  box-shadow: none;
+}
+.bslib-page-sidebar .navbar h1 {
+  color: #fff;
+  font-size: 21px !important;
+  font-weight: 700;
+  letter-spacing: -.3px;
+}
+.bslib-page-sidebar .navbar a {
+  color: #9fe9f2 !important;
+  font-family: 'IBM Plex Mono', monospace !important;
+  font-size: 12px !important;
+}
+
+/* ---------- sidebar shell ---------- */
+.bslib-page-sidebar .sidebar {
+  background: var(--gg-sidebar) !important;
+  color: #cfe4e7;
+  border-right: 1px solid rgba(0,0,0,.2);
+  padding: 18px 18px 16px;
+}
+.bslib-page-sidebar .sidebar .control-label,
+.bslib-page-sidebar .sidebar label {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: .6px;
+  text-transform: uppercase;
+  color: #7fa3a9 !important;
+}
+
+/* ---------- sidebar brand block (step 2) ---------- */
+.gg-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 2px 2px 14px;
+  border-bottom: 1px solid rgba(255,255,255,.08);
+  margin-bottom: 14px;
+}
+.gg-brand-tile {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  border-radius: 11px;
+  background: var(--gg-accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  box-shadow: 0 4px 14px rgba(24,208,230,.35);
+}
+.gg-brand-ring {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  border: 3px solid #07303b;
+}
+.gg-brand-dot {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #07303b;
+  bottom: 8px;
+  right: 9px;
+}
+.gg-brand-text { line-height: 1.15; }
+.gg-brand-title {
+  font-size: 17px;
+  font-weight: 700;
+  color: #fff;
+  letter-spacing: -.2px;
+}
+.gg-brand-sub {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: #7fa8af;
+  letter-spacing: .6px;
+  text-transform: uppercase;
+}
+
+/* group the sidebar boxes (Upload / Event / Game / Track) */
+.bslib-page-sidebar .sidebar div[style*="border"] {
+  background: rgba(255,255,255,.05) !important;
+  border: 1px solid rgba(255,255,255,.12) !important;
+  border-radius: 10px !important;
+}
+
+/* upload box as a dashed drop-target (step 2) — after the group-box rule so
+   its !important border wins the specificity tie */
+.bslib-page-sidebar .sidebar div.gg-upload-box {
+  border: 1px dashed rgba(255,255,255,.22) !important;
+  transition: border-color .15s, background .15s;
+}
+.bslib-page-sidebar .sidebar div.gg-upload-box:hover {
+  border-color: rgba(24,208,230,.55) !important;
+  background: rgba(255,255,255,.09) !important;
+}
+
+/* file input (Upload JSON file) */
+.bslib-page-sidebar .sidebar .input-group .form-control {
+  background: rgba(0,0,0,.22);
+  border: 1px solid rgba(255,255,255,.12);
+  color: #eaf4f5;
+}
+.bslib-page-sidebar .sidebar .gg-upload-box .form-control {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: #cfe4e7;
+}
+.bslib-page-sidebar .sidebar .input-group .btn,
+.bslib-page-sidebar .sidebar .btn-file {
+  background: rgba(24,208,230,.16);
+  color: #9fe9f2;
+  border: none;
+  font-weight: 600;
+}
+/* upload progress bar */
+.bslib-page-sidebar .sidebar .progress {
+  background: rgba(0,0,0,.25);
+}
+.bslib-page-sidebar .sidebar .progress-bar {
+  background-color: var(--gg-accent);
+  color: #06303a;
+}
+
+/* RW/VE legend under the game picker (inline #555 is unreadable on dark) */
+.bslib-page-sidebar .sidebar .gg-picker-legend {
+  color: #9fb7bc !important;
+}
+
+/* selected-track info line above the Download button */
+.bslib-page-sidebar .sidebar #info_download {
+  color: #7fa3a9;
+  font-size: 11.5px;
+}
+
+/* radio (theme) */
+.bslib-page-sidebar .sidebar .radio-inline,
+.bslib-page-sidebar .sidebar .shiny-options-group label {
+  color: #dceef0 !important;
+}
+
+/* the classic Light/Dark radio has no effect while the new design is on */
+#theme.shiny-input-radiogroup { display: none; }
+
+/* links inside the dark sidebar */
+.bslib-page-sidebar .sidebar a { color: #9fe9f2; }
+
+/* ---------- pickerInput / selectInput ---------- */
+/* main area (Map / Pictures / Compare tabs): light pill on white cards */
+.bootstrap-select .btn,
+.bootstrap-select .dropdown-toggle {
+  background: #fafcfc !important;
+  border: 1px solid var(--gg-border) !important;
+  border-radius: 9px !important;
+  color: #1c3c43 !important;
+  font-size: 12.5px;
+  font-weight: 500;
+}
+.bootstrap-select .dropdown-menu li.active a,
+.bootstrap-select .dropdown-menu li:hover a {
+  background-color: rgba(24,208,230,.12) !important;
+  color: var(--gg-ink) !important;
+}
+.bootstrap-select .dropdown-menu li a span.check-mark { color: var(--gg-accent) !important; }
+
+/* sidebar (Event, Game, Track): dark pill */
+.bslib-page-sidebar .sidebar .bootstrap-select .btn,
+.bslib-page-sidebar .sidebar .bootstrap-select .dropdown-toggle {
+  background: rgba(0,0,0,.22) !important;
+  border: 1px solid rgba(255,255,255,.14) !important;
+  border-radius: 9px !important;
+  color: #eaf4f5 !important;
+  font-size: 12.5px;
+  font-weight: 500;
+}
+/* the popup menu (container = FALSE keeps it inside the sidebar DOM) */
+.bslib-page-sidebar .sidebar .bootstrap-select .dropdown-menu {
+  background: var(--gg-sidebar-2);
+  border: 1px solid rgba(255,255,255,.14);
+  border-radius: 10px;
+  box-shadow: 0 16px 40px rgba(0,0,0,.45);
+}
+.bslib-page-sidebar .sidebar .bootstrap-select .dropdown-menu li a span.text { color: #dceef0 !important; }
+.bslib-page-sidebar .sidebar .bootstrap-select .dropdown-menu li.active a,
+.bslib-page-sidebar .sidebar .bootstrap-select .dropdown-menu li:hover a {
+  background-color: rgba(24,208,230,.16) !important;
+  color: #eaf4f5 !important;
+}
+
+/* sidebar action / download buttons */
+.bslib-page-sidebar .sidebar .btn-default,
+.bslib-page-sidebar .sidebar .btn:not(.btn-file):not(.dropdown-toggle) {
+  background: rgba(255,255,255,.08);
+  border: 1px solid rgba(255,255,255,.16);
+  color: #eaf4f5;
+  border-radius: 9px;
+  font-weight: 600;
+}
+.bslib-page-sidebar .sidebar .btn:not(.dropdown-toggle):hover { background: rgba(255,255,255,.16); }
+
+/* ---------- tabs (step 1) ---------- */
+/* White strip with cyan underline for the active tab */
+.nav-tabs {
+  background: var(--gg-card);
+  border-bottom: 1px solid var(--gg-border);
+  border-radius: 12px 12px 0 0;
+  padding: 6px 14px 0;
+  gap: 2px;
+}
+.nav-tabs > li > a,
+.nav-tabs .nav-link {
+  border: none !important;
+  background: none !important;
+  color: #7a8f94 !important;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 10px 15px 13px;
+  border-bottom: 3px solid transparent !important;
+}
+.nav-tabs > li.active > a,
+.nav-tabs .nav-link.active {
+  color: var(--gg-ink) !important;
+  border-bottom: 3px solid var(--gg-accent) !important;
+}
+.nav-tabs > li > a:hover,
+.nav-tabs .nav-link:hover {
+  background-color: rgba(24,208,230,.08) !important;
+  color: var(--gg-ink) !important;
+  border: none !important;
+  border-bottom: 3px solid rgba(24,208,230,.4) !important;
+}
+
+/* ---------- cards / boxed panels in main area ---------- */
+.card,
+.bslib-card,
+tabPanel .well,
+.main .shiny-html-output > div[style*="border"] {
+  background: var(--gg-card);
+  border: 1px solid var(--gg-border) !important;
+  border-radius: var(--gg-radius) !important;
+  box-shadow: 0 1px 3px rgba(0,0,0,.04);
+}
+
+/* main-area buttons */
+.btn-default {
+  background: #f1f5f6;
+  border: 1px solid var(--gg-border);
+  color: #2d474d;
+  border-radius: 9px;
+  font-weight: 600;
+}
+.btn-primary,
+.btn-info {
+  background: var(--gg-accent);
+  border-color: var(--gg-accent);
+  color: #06303a;
+  font-weight: 700;
+  border-radius: 9px;
+}
+
+/* ---------- All-tasks tab (step 3) ---------- */
+/* filter row becomes a white card */
+div.gg-filter-card {
+  background: var(--gg-card) !important;
+  border: 1px solid var(--gg-border) !important;
+  border-radius: var(--gg-radius) !important;
+  box-shadow: 0 1px 3px rgba(0,0,0,.04);
+  padding: 14px 18px !important;
+}
+.gg-filter-card label,
+.gg-filter-card .control-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--gg-muted);
+}
+
+/* ---------- stat-card row (step 4) ---------- */
+/* rendered by player_info_box in new-design mode only */
+#player_info_box { flex: 1 1 auto; }
+.gg-stat-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-bottom: 6px;
+}
+.gg-stat-card {
+  background: var(--gg-card);
+  border: 1px solid var(--gg-border);
+  border-radius: var(--gg-radius);
+  padding: 14px 17px;
+  min-width: 150px;
+  flex: 1 1 150px;
+  box-shadow: 0 1px 3px rgba(0,0,0,.04);
+}
+.gg-stat-label {
+  font-size: 10.5px;
+  color: var(--gg-muted);
+  font-weight: 600;
+  letter-spacing: .4px;
+  text-transform: uppercase;
+  margin-bottom: 7px;
+}
+.gg-stat-value {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 25px;
+  font-weight: 600;
+  color: var(--gg-ink);
+  line-height: 1;
+}
+.gg-stat-good { color: #1f9d6b; }
+.gg-stat-unit { font-size: 14px; color: #b3c0c3; }
+
+/* dark player card (first card in the row) */
+.gg-stat-card.gg-player-card {
+  background: linear-gradient(135deg, #0d2f38, #10454f);
+  border: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 220px;
+  flex: 1.4 1 220px;
+}
+.gg-avatar {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: var(--gg-accent);
+  color: #06303a;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'IBM Plex Mono', monospace;
+  font-weight: 700;
+  font-size: 14px;
+  flex: none;
+}
+.gg-player-name {
+  font-size: 15px;
+  font-weight: 700;
+  color: #fff;
+  line-height: 1.25;
+}
+.gg-player-sub {
+  font-size: 11.5px;
+  color: #8fb3b9;
+  font-family: 'IBM Plex Mono', monospace;
+}
+
+/* per-task results table wrapped as a white card */
+#iris_data {
+  background: var(--gg-card);
+  border: 1px solid var(--gg-border);
+  border-radius: var(--gg-radius);
+  padding: 10px 14px 14px;
+  box-shadow: 0 1px 3px rgba(0,0,0,.04);
+}
+#iris_data .dataTables_wrapper .dataTables_length,
+#iris_data .dataTables_wrapper .dataTables_filter,
+#iris_data .dataTables_wrapper .dataTables_info,
+#iris_data .dataTables_wrapper .dataTables_paginate {
+  font-size: 12px;
+  color: var(--gg-ink-soft);
+}
+#iris_data .dataTables_wrapper .dataTables_filter input,
+#iris_data .dataTables_wrapper .dataTables_length select {
+  border: 1px solid var(--gg-border);
+  border-radius: 8px;
+  padding: 3px 8px;
+}
+
+/* ---------- DataTable (#iris_data) ---------- */
+#iris_data table.dataTable thead th {
+  background: #fafcfc;
+  color: var(--gg-muted);
+  font-size: 10.5px !important;
+  font-weight: 600;
+  letter-spacing: .5px;
+  text-transform: uppercase;
+  border-bottom: 1px solid #eef2f3;
+}
+#iris_data table.dataTable tbody td {
+  font-size: 13px !important;
+  color: #33474c;
+  border-bottom: 1px solid #f2f5f6;
+}
+#iris_data table.dataTable tbody tr:nth-child(even) { background: #fbfcfd; }
+
+/* monospace for numeric-feeling things */
+.gg-mono, #info_download, .dataTables_info {
+  font-family: 'IBM Plex Mono', monospace;
+}
+
+/* toggle (switchInput "Advanced Direction Task Analysis") accent */
+.bootstrap-switch .bootstrap-switch-handle-on.bootstrap-switch-primary,
+.bootstrap-switch.bootstrap-switch-on .bootstrap-switch-label {
+  background: var(--gg-accent);
+  color: #06303a;
+}
+
+
+/* ============================================================
+   Mockup component hooks (paired with shiny_components.R,
+   design_handoff_geogami_dashboard 4). Merged verbatim from the
+   handoff, minus the two rules (.gg-version, .btn-gg-chip) that
+   supersede earlier step-1/step-3 versions of the same hooks above.
+   ============================================================ */
+
+/* dark sidebar boxes — replaces the inline "1px solid #ccc" boxes */
+.gg-box {
+  background: rgba(255,255,255,.05) !important;
+  border: 1px solid rgba(255,255,255,.12) !important;
+  border-radius: 10px !important;
+  padding: 12px !important;
+  margin-bottom: 12px;
+}
+
+/* track action row */
+.gg-track-actions { margin-top: 4px; }
+.gg-track-actions .shiny-text-output {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10.5px;
+  color: #7fa3a9;
+}
+/* Download + Share side by side (see app.R: gg-track-actions-row wrapper) */
+.gg-track-actions-row {
+  display: flex;
+  gap: 7px;
+  margin-top: 8px;
+}
+.gg-track-actions-row .btn {
+  flex: 1;
+  width: auto !important;
+  margin: 0 !important;
+}
+
+/* footer version line */
+.gg-version {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10.5px;
+  color: #5d8087;
+  text-align: center;
+  padding-top: 6px;
+}
+
+/* white card + trajectory controls */
+.gg-card {
+  background: #fff;
+  border: 1px solid var(--gg-border);
+  border-radius: var(--gg-radius);
+  box-shadow: 0 1px 3px rgba(0,0,0,.04);
+}
+.gg-traj-controls { padding: 13px 16px; margin-bottom: 14px; }
+.gg-traj-controls .control-label {
+  font-size: 10.5px; font-weight: 600; letter-spacing: .5px;
+  text-transform: uppercase; color: #8a9ca0 !important;
+}
+
+/* ghost button (main area) */
+.btn-gg-ghost, .gg-btn-ghost {
+  background: #f1f5f6 !important;
+  border: 1px solid var(--gg-border) !important;
+  color: #2d474d !important;
+  border-radius: 8px !important;
+  font-weight: 600 !important;
+}
+.btn-gg-ghost:hover, .gg-btn-ghost:hover { background: #e7edee !important; }
+
+/* accent (cyan) primary button */
+.btn-gg-accent, .gg-btn-accent {
+  background: var(--gg-accent) !important;
+  border: 1px solid var(--gg-accent) !important;
+  color: #06303a !important;
+  border-radius: 9px !important;
+  font-weight: 700 !important;
+  box-shadow: 0 2px 8px rgba(24,208,230,.3);
+}
+.btn-gg-accent:hover, .gg-btn-accent:hover { filter: brightness(1.06); }
+/* per-track share sits inside the sidebar → tint variant */
+.sidebar .btn-gg-accent, .sidebar .gg-btn-accent {
+  background: rgba(24,208,230,.14) !important;
+  border-color: rgba(24,208,230,.35) !important;
+  color: #9fe9f2 !important;
+  box-shadow: none;
+}
+
+/* task-ID filter chips (radioGroupButtons status = "gg-chip") */
+.btn-gg-chip {
+  font-family: 'IBM Plex Mono', monospace !important;
+  font-size: 11.5px !important;
+  font-weight: 600 !important;
+  border: 1px solid var(--gg-border) !important;
+  background: #fff !important;
+  color: #5e7479 !important;
+  border-radius: 7px !important;
+  padding: 4px 10px !important;
+  margin: 0 4px 4px 0 !important;
+}
+.btn-gg-chip.active,
+.btn-gg-chip:active {
+  border-color: var(--gg-accent) !important;
+  background: #e9fbfd !important;
+  color: #0d2f38 !important;
+}

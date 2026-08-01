@@ -169,10 +169,19 @@ api_get <- function(url, token) {
 #   format(Sys.time(), "%d.%m.%y %H:%M:%S")
 # })
 
+# bslib theme matching the GeoGami design (stylesheet: www/geogami.css).
+# Also reused by the Light/Dark observer in the server so switching back to
+# Light restores this theme instead of the old "flatly" bootswatch.
+geogami_theme <- bs_theme(
+  bg = "#eef1f3", fg = "#0d2f38", primary = "#18d0e6",
+  base_font = font_google("IBM Plex Sans"),
+  code_font = font_google("IBM Plex Mono")
+)
+
 ui <- page_sidebar(
   title = div(
     style = "display: flex; align-items: center; gap: 20px;",
-    tags$img(src = "https://geogami.ifgi.de/wp-content/uploads/2020/03/Unbenannt-7.png", height = "60px"),
+    tags$img(src = "https://geogami.uni-muenster.de/wp-content/uploads/2020/03/Unbenannt-7.png", height = "60px"),
     tags$div(
       tags$h1("Welcome to the dashboard!", style = "margin: 0; font-size: 24px;"),
       tags$a("app.geogami.uni-muenster.de", href = "https://app.geogami.uni-muenster.de/", style = "font-size: 14px; color: white;")
@@ -180,6 +189,23 @@ ui <- page_sidebar(
   ),
   
   tags$head(
+    # GeoGami redesign stylesheet. Loaded up front but disabled right below —
+    # the "New design" switch in the sidebar enables it at runtime through the
+    # gg-set-design message handler, which also stamps a .gg-design class on
+    # <body> so classic-only rules in the inline CSS can be scoped with
+    # body:not(.gg-design).
+    tags$link(id = "gg-css", rel = "stylesheet", type = "text/css", href = "geogami.css"),
+    tags$script(HTML('
+      document.getElementById("gg-css").disabled = true;
+      document.addEventListener("DOMContentLoaded", function() {
+        if (!window.Shiny) return;
+        Shiny.addCustomMessageHandler("gg-set-design", function(on) {
+          var l = document.getElementById("gg-css");
+          if (l) l.disabled = !on;
+          document.body.classList.toggle("gg-design", !!on);
+        });
+      });
+    ')),
     tags$style(HTML("
     #selected_multiple_files-label + div div > .items {
       width: 80vw;
@@ -233,12 +259,21 @@ ui <- page_sidebar(
       color: #333 !important;
     }
    
+    /* Header bar: shared sizing; the classic gradient only applies while the
+       new design is off (the new flat header lives in www/geogami.css). */
     .bslib-page-sidebar .navbar {
-      background: linear-gradient(90deg, rgb(7, 48, 59) 20%, #0CD1E8 100%);
       min-height: 80px;
       padding-top: 10px;
       padding-bottom: 10px;
       padding-left: 20px;
+    }
+    body:not(.gg-design) .bslib-page-sidebar .navbar {
+      background: linear-gradient(90deg, rgb(7, 48, 59) 20%, #0CD1E8 100%);
+    }
+
+    /* New-design-only sidebar brand block — hidden while the classic look is active */
+    body:not(.gg-design) .gg-brand {
+      display: none;
     }
 
     .bslib-page-sidebar .navbar-brand {
@@ -291,8 +326,8 @@ ui <- page_sidebar(
       width: 100% !important;
     }
 
-    /* Hover effect on main tabs */
-    .nav-tabs > li > a:hover {
+    /* Classic tab hover — new-design tabs are styled in www/geogami.css */
+    body:not(.gg-design) .nav-tabs > li > a:hover {
       background-color: #27E7F5 !important;  /* teal blue on hover */
       color: #000 !important;
       border: 1px solid #ffc107;
@@ -318,35 +353,38 @@ ui <- page_sidebar(
     padding-bottom: 6px !important;
   }
 
-  /* Align and restyle check marks */
+  /* Align check marks (shared between both designs) */
   .bootstrap-select .dropdown-menu li a span.check-mark {
     position: absolute !important;
     right: 10px !important;
     top: 50% !important;
     transform: translateY(-50%);
-    color: #198754;                      /* green tick */
     font-size: 14px;
   }
 
+  /* Classic picker colors — the new design recolors these in www/geogami.css
+     (dark menu in the sidebar, light menu in the main area) */
+  body:not(.gg-design) .bootstrap-select .dropdown-menu li a span.check-mark {
+    color: #198754;                      /* green tick */
+  }
+  body:not(.gg-design) .bootstrap-select .dropdown-menu li a span.text {
+    color: #000 !important;
+  }
+  body:not(.gg-design) .bootstrap-select .filter-option-inner-inner {
+    color: #000 !important;
+  }
+  body:not(.gg-design) .bootstrap-select .dropdown-menu li.active a,
+  body:not(.gg-design) .bootstrap-select .dropdown-menu li:hover a {
+    background-color: #27e7f5 !important; /* light teal-blue background */
+    color: #000 !important;
+  }
 
-    /* Make pickerInput dropdown text darker and bolder like selectInput */
 .bootstrap-select .dropdown-menu li a span.text {
-  font-weight: 400 !important;   /* similar to selectInput weight */
-  color: #000 !important;        /* pure black text for better contrast */
+  font-weight: 400 !important;
 }
 
-    /* Optional: make the selected text (on the button) also bold */
 .bootstrap-select .filter-option-inner-inner {
   font-weight: 400 !important;
-  color: #000 !important;
-}
-
-
-    /* Make selected/hovered pickerInput option lighter */
-.bootstrap-select .dropdown-menu li.active a,
-.bootstrap-select .dropdown-menu li:hover a {
-  background-color: #27e7f5 !important; /* light teal-blue background */
-  color: #000 !important;                /* ensure text stays readable */
 }
 
 /* Keep long information assignment text to max 2 visible lines */
@@ -551,21 +589,46 @@ ui <- page_sidebar(
 '))
   ),
   
-  theme = bs_theme(),  # initially empty theme
+  theme = bs_theme(),  # classic default; swapped at runtime by the design/theme observer
   
   # Sidebar with collapsible toggle
   
   sidebar = sidebar(
     width = "300px",
-    # Upload JSON file section
-    div(style = "border: 1px solid #ccc; padding: 10px; margin-bottom: 5px; border-radius: 5px;",
+    # New-design sidebar brand block. Markup is always present but hidden in
+    # classic mode (body:not(.gg-design) rule in the inline CSS below);
+    # styled by www/geogami.css.
+    div(
+      class = "gg-brand",
+      div(class = "gg-brand-tile", div(class = "gg-brand-ring"), div(class = "gg-brand-dot")),
+      div(
+        class = "gg-brand-text",
+        div(class = "gg-brand-title", "GeoGami"),
+        div(class = "gg-brand-sub", "Evaluation Dashboard")
+      )
+    ),
+    # Old/new design toggle: enables the GeoGami redesign (www/geogami.css +
+    # geogami_theme). Off = the classic look, unchanged.
+    switchInput(
+      inputId = "new_design",
+      label = "New design",
+      value = FALSE,
+      onLabel = "On",
+      offLabel = "Off",
+      size = "small",
+      labelWidth = "90px"
+    ),
+    # Upload JSON file section (gg-upload-box: dashed drop-target look in the
+    # new design; the class is inert in classic mode)
+    div(class = "gg-box gg-upload-box",
+        style = "border: 1px solid #ccc; padding: 10px; margin-bottom: 5px; border-radius: 5px;",
         fileInput("uploaded_json_file", "Upload JSON file:", accept = ".json", multiple = FALSE),
     ),
     
     #filter 0 - event selection (above game selection)
     conditionalPanel(
       condition = "typeof window.location.search.match(/token=([^&]+)/) !== 'undefined' && window.location.search.match(/token=([^&]+)/) !== null",
-      div(style = "border: 1px solid #ccc; padding: 10px; margin-bottom: 15px; border-radius: 8px;",
+      div(class = "gg-box", style = "border: 1px solid #ccc; padding: 10px; margin-bottom: 15px; border-radius: 8px;",
           pickerInput(
             inputId = "selected_event",
             label = "Select event:",
@@ -595,7 +658,7 @@ ui <- page_sidebar(
     #filter 1 - game selection
     conditionalPanel(
       condition = "typeof window.location.search.match(/token=([^&]+)/) !== 'undefined' && window.location.search.match(/token=([^&]+)/) !== null",
-      div(style = "border: 1px solid #ccc; padding: 10px; margin-bottom: 15px; border-radius: 8px;",
+      div(class = "gg-box", style = "border: 1px solid #ccc; padding: 10px; margin-bottom: 15px; border-radius: 8px;",
           pickerInput(
             inputId = "selected_games",
             label = "Select a game:",
@@ -615,6 +678,7 @@ ui <- page_sidebar(
           # badge+label pair stays together but drops to the next line on
           # narrow (responsive) widths.
           div(
+            class = "gg-picker-legend",
             style = "margin-top: 6px; font-size: 11px; color: #555; display: flex; flex-wrap: wrap; gap: 2px 10px;",
             tags$span(
               style = "white-space: nowrap;",
@@ -637,7 +701,7 @@ ui <- page_sidebar(
     #filter 2 - JSON file selection
     conditionalPanel(
       condition = "typeof window.location.search.match(/token=([^&]+)/) !== 'undefined' && window.location.search.match(/token=([^&]+)/) !== null",
-      div(style = "border: 1px solid #ccc; padding: 10px; margin-bottom: 15px; border-radius: 8px;",
+      div(class = "gg-box", style = "border: 1px solid #ccc; padding: 10px; margin-bottom: 15px; border-radius: 8px;",
           pickerInput(
             inputId = "selected_files",
             label = "Select the players:",
@@ -653,10 +717,19 @@ ui <- page_sidebar(
             )
           ),
           #actionButton("reset", "Reset", icon = icon("refresh"), style = "width:150px; margin-top: 10px; margin-bottom: 15px; margin-right: 15px"),
-          textOutput("info_download"),
-          downloadButton("download_json", "Download", icon = icon("download"), style = "width:150px; margin-top: 10px; margin-bottom: 15px;"),
-          # Per-track share button — appears when exactly one track is selected.
-          uiOutput("share_track_button_ui")
+          # gg-track-actions-row lays these out side by side once the new
+          # design's stylesheet is active; classic mode (stylesheet disabled)
+          # keeps the original stacked block layout untouched.
+          div(class = "gg-track-actions",
+              textOutput("info_download"),
+              div(class = "gg-track-actions-row",
+                  downloadButton("download_json", "Download", icon = icon("download"),
+                                 class = "gg-btn-ghost",
+                                 style = "width:150px; margin-top: 10px; margin-bottom: 15px;"),
+                  # Per-track share button — appears when exactly one track is selected.
+                  uiOutput("share_track_button_ui")
+              )
+          )
       )
     ),
 
@@ -671,6 +744,7 @@ ui <- page_sidebar(
                  selected = "Light"),
 
     div(
+      class = "gg-version",
       style = "text-align: left; color: #888; font-size: 12px;",
 
       # Latest GitHub release version + last commit time on main (see build_version_footer)
@@ -683,15 +757,16 @@ ui <- page_sidebar(
     tabPanel(
       'All tasks',
       div(
+        class = "gg-filter-card",
         style = "display: flex; justify-content: flex-start; gap: 40px; align-items: flex-start;
              margin-top: 20px; margin-bottom: 15px;
              border: 1px solid #ccc; padding: 10px;",
         # Task filter
-        div(style = "min-width: 300px;", 
+        div(style = "min-width: 300px;",
             uiOutput("task_id_selector")),
-        
+
         # Player selector
-        div(style = "min-width: 300px;", 
+        div(style = "min-width: 300px;",
             uiOutput("file_selector_ui"))
       ),
       
@@ -2567,8 +2642,8 @@ server <- function(input, output, session) {
   
   
   
-  # apiURL_rv <- reactiveVal("http://localhost:3000")
-  apiURL_rv <- reactiveVal("https://api.geogami.uni-muenster.de")
+  apiURL_rv <- reactiveVal("http://localhost:3000")
+  # apiURL_rv <- reactiveVal("https://api.geogami.uni-muenster.de")
   
   # ---------- Multi-player trajectories on Map tab START ----------
   
@@ -2718,13 +2793,20 @@ server <- function(input, output, session) {
     tokenParam <- query[["token"]]
     accessToken_rv(tokenParam)
   })
-  # Theme options
+  # Theme options + design toggle. The "New design" switch (sidebar top)
+  # overrides the Light/Dark radio: while it is on, the geogami theme applies
+  # and www/geogami.css is enabled in the browser (gg-set-design handler in
+  # tags$head); while off, the classic flatly/solar themes apply as before.
   observe({
-    if (input$theme == "Dark") {
+    new_on <- isTRUE(input$new_design)
+    if (new_on) {
+      session$setCurrentTheme(geogami_theme)
+    } else if (identical(input$theme, "Dark")) {
       session$setCurrentTheme(bs_theme(bootswatch = "solar"))
     } else {
       session$setCurrentTheme(bs_theme(bootswatch = "flatly"))
     }
+    session$sendCustomMessage("gg-set-design", new_on)
   })
   output$text <- renderText({
     paste("Current theme is:", input$theme)
@@ -3154,7 +3236,9 @@ server <- function(input, output, session) {
     
     pickerInput(
       "selected_data_file_all",
-      "Selected Players:",
+      # stays a pickerInput in both modes (cross-tab sync uses
+      # updatePickerInput); only the label follows the design
+      label = if (isTRUE(input$new_design)) "Inspecting player:" else "Selected Players:",
       choices = choices_now,
       selected = selected_now,
       multiple = FALSE,
@@ -3866,11 +3950,50 @@ server <- function(input, output, session) {
     output$player_info_box <- renderUI({
       req(data[[1]]$players[1])
       
-      div(id = "inlineDiv",
-          style = "margin-bottom: 20px; border: 1px solid #ccc; padding: 10px; border-radius: 5px; background-color: #f9f9f9;",
-          h5(textOutput("player_name")),
-          h5(textOutput("overall_score"))
-      )
+      if (isTRUE(input$new_design)) {
+        # New design: mockup-style stat-card row. sm/good/total are computed in
+        # the enclosing data-load block; values are read at render time.
+        player_nm <- as.character(data[[1]]$players[1])
+        initials <- toupper(paste(substr(strsplit(trimws(player_nm), "\\s+")[[1]], 1, 1), collapse = ""))
+        initials <- substr(initials, 1, 2)
+        tries_total <- sum(suppressWarnings(as.numeric(sm$tries)), na.rm = TRUE)
+        mins_total <- sum(suppressWarnings(as.numeric(sm$time_s)), na.rm = TRUE) / 60
+
+        div(
+          class = "gg-stat-row",
+          div(
+            class = "gg-stat-card gg-player-card",
+            div(class = "gg-avatar", initials),
+            div(
+              div(class = "gg-player-name", player_nm),
+              div(class = "gg-player-sub", "GeoGami track")
+            )
+          ),
+          div(
+            class = "gg-stat-card",
+            div(class = "gg-stat-label", "Overall score"),
+            div(class = "gg-stat-value gg-stat-good", paste0(good, "/", total))
+          ),
+          div(
+            class = "gg-stat-card",
+            div(class = "gg-stat-label", "Total tries"),
+            div(class = "gg-stat-value", format(tries_total))
+          ),
+          div(
+            class = "gg-stat-card",
+            div(class = "gg-stat-label", "Task time"),
+            div(class = "gg-stat-value",
+                HTML(paste0(formatC(mins_total, format = "f", digits = 1),
+                            "<span class='gg-stat-unit'> min</span>")))
+          )
+        )
+      } else {
+        div(id = "inlineDiv",
+            style = "margin-bottom: 20px; border: 1px solid #ccc; padding: 10px; border-radius: 5px; background-color: #f9f9f9;",
+            h5(textOutput("player_name")),
+            h5(textOutput("overall_score"))
+        )
+      }
     })
     
     df_react(df)
@@ -3932,35 +4055,60 @@ server <- function(input, output, session) {
         selected_ids <- task_ids
       }
       
-      tagList(
-        pickerInput(
-          "selected_task_ids",
-          "Filter by Task ID:",
-          choices = task_ids,
-          selected = selected_ids,
-          multiple = TRUE,
-          options = list(
-            `actions-box` = TRUE,
-            `live-search` = FALSE,
-            `none-selected-text` = "Filter by Task ID:",
-            `width` = '100%',
-            container = FALSE,
-            size = 10
+      # New design renders the task filter as a single-select chip row (an
+      # "All" chip plus one per task, matching the mockup); classic keeps the
+      # multi-select picker. Both write into the same input$selected_task_ids,
+      # so filtered_df() below has to handle both shapes.
+      if (isTRUE(input$new_design)) {
+        radioGroupButtons(
+          inputId = "selected_task_ids",
+          label = "Filter by task ID:",
+          choices = c("All" = "all", setNames(task_ids, task_ids)),
+          selected = if (length(selected_ids) >= length(task_ids)) "all" else selected_ids[1],
+          status = "gg-chip",
+          size = "sm"
+        )
+      } else {
+        tagList(
+          pickerInput(
+            "selected_task_ids",
+            "Filter by Task ID:",
+            choices = task_ids,
+            selected = selected_ids,
+            multiple = TRUE,
+            options = list(
+              `actions-box` = TRUE,
+              `live-search` = FALSE,
+              `none-selected-text` = "Filter by Task ID:",
+              `width` = '100%',
+              container = FALSE,
+              size = 10
+            )
           )
         )
-      )
+      }
     })
     
-    # Filtered data
+    # Filtered data. input$selected_task_ids is either a multi-select vector of
+    # row-number strings (classic picker) or a single value that's either the
+    # sentinel "all" or one row-number string (new-design radio chips) — handle
+    # both shapes here rather than branch on input$new_design, since the value
+    # already reflects whichever widget is currently rendered.
     filtered_df <- reactive({
       req(df_react())
       df <- df_react()
-      
-      if (is.null(input$selected_task_ids) || length(input$selected_task_ids) == 0) {
+
+      sel <- input$selected_task_ids
+      if (is.null(sel) || length(sel) == 0) {
         return(df)   # if none selected, show all
       }
-      
-      df[input$selected_task_ids, , drop = FALSE]   # subset by row numbers
+
+      ids <- sel[sel != "all"]
+      if (length(ids) == 0) {
+        return(df)   # "all" chip selected (or nothing left after dropping it)
+      }
+
+      df[ids, , drop = FALSE]   # subset by row numbers
     })
     
     # Show table
@@ -3982,11 +4130,22 @@ server <- function(input, output, session) {
     observeEvent(input$select_all_tasks, {
       req(df_react())
       task_ids <- seq_len(nrow(df_react()))
-      updateSelectInput(session, "selected_task_ids", selected = task_ids)
+      # the widget differs per design mode (single-select chips vs multi-select
+      # picker), so use the matching update function
+      if (isTRUE(input$new_design)) {
+        updateRadioGroupButtons(session, "selected_task_ids", selected = "all")
+      } else {
+        updateSelectInput(session, "selected_task_ids", selected = task_ids)
+      }
     })
-    
+
     observeEvent(input$deselect_all_tasks, {
-      updateSelectInput(session, "selected_task_ids", selected = character(0))
+      if (isTRUE(input$new_design)) {
+        # a radio chip row can't be "empty" — "all" already means unfiltered
+        updateRadioGroupButtons(session, "selected_task_ids", selected = "all")
+      } else {
+        updateSelectInput(session, "selected_task_ids", selected = character(0))
+      }
     })
     
     #---------logic for select/deselect all ends ----------------------
@@ -4193,9 +4352,9 @@ server <- function(input, output, session) {
         tagList(
           div(
             style = "display: flex; gap: 10px; align-items: center; flex-wrap: wrap;",
-            downloadButton('save_data', 'Save to CSV'),
+            downloadButton('save_data', 'Save to CSV', class = "gg-btn-ghost"),
             if (!is.null(input$selected_files) && length(input$selected_files) > 0) {
-              downloadButton('save_all_data', 'Save All Players')
+              downloadButton('save_all_data', 'Save All Players', class = "gg-btn-ghost")
             }
           )
         )
@@ -5662,11 +5821,50 @@ server <- function(input, output, session) {
     output$player_info_box <- renderUI({
       req(data[[1]]$players[1])
       
-      div(id = "inlineDiv",
-          style = "margin-bottom: 20px; border: 1px solid #ccc; padding: 10px; border-radius: 5px; background-color: #f9f9f9;",
-          h5(textOutput("player_name")),
-          h5(textOutput("overall_score"))
-      )
+      if (isTRUE(input$new_design)) {
+        # New design: mockup-style stat-card row. sm/good/total are computed in
+        # the enclosing data-load block; values are read at render time.
+        player_nm <- as.character(data[[1]]$players[1])
+        initials <- toupper(paste(substr(strsplit(trimws(player_nm), "\\s+")[[1]], 1, 1), collapse = ""))
+        initials <- substr(initials, 1, 2)
+        tries_total <- sum(suppressWarnings(as.numeric(sm$tries)), na.rm = TRUE)
+        mins_total <- sum(suppressWarnings(as.numeric(sm$time_s)), na.rm = TRUE) / 60
+
+        div(
+          class = "gg-stat-row",
+          div(
+            class = "gg-stat-card gg-player-card",
+            div(class = "gg-avatar", initials),
+            div(
+              div(class = "gg-player-name", player_nm),
+              div(class = "gg-player-sub", "GeoGami track")
+            )
+          ),
+          div(
+            class = "gg-stat-card",
+            div(class = "gg-stat-label", "Overall score"),
+            div(class = "gg-stat-value gg-stat-good", paste0(good, "/", total))
+          ),
+          div(
+            class = "gg-stat-card",
+            div(class = "gg-stat-label", "Total tries"),
+            div(class = "gg-stat-value", format(tries_total))
+          ),
+          div(
+            class = "gg-stat-card",
+            div(class = "gg-stat-label", "Task time"),
+            div(class = "gg-stat-value",
+                HTML(paste0(formatC(mins_total, format = "f", digits = 1),
+                            "<span class='gg-stat-unit'> min</span>")))
+          )
+        )
+      } else {
+        div(id = "inlineDiv",
+            style = "margin-bottom: 20px; border: 1px solid #ccc; padding: 10px; border-radius: 5px; background-color: #f9f9f9;",
+            h5(textOutput("player_name")),
+            h5(textOutput("overall_score"))
+        )
+      }
     })
     
     df_react(df)
@@ -5725,35 +5923,60 @@ server <- function(input, output, session) {
         selected_ids <- task_ids
       }
       
-      tagList(
-        pickerInput(
-          "selected_task_ids",
-          "Filter by Task ID:",
-          choices = task_ids,
-          selected = selected_ids,
-          multiple = TRUE,
-          options = list(
-            `actions-box` = TRUE,
-            `live-search` = FALSE,
-            `none-selected-text` = "Filter by Task ID:",
-            `width` = '100%',
-            container = FALSE,
-            size = 10
+      # New design renders the task filter as a single-select chip row (an
+      # "All" chip plus one per task, matching the mockup); classic keeps the
+      # multi-select picker. Both write into the same input$selected_task_ids,
+      # so filtered_df() below has to handle both shapes.
+      if (isTRUE(input$new_design)) {
+        radioGroupButtons(
+          inputId = "selected_task_ids",
+          label = "Filter by task ID:",
+          choices = c("All" = "all", setNames(task_ids, task_ids)),
+          selected = if (length(selected_ids) >= length(task_ids)) "all" else selected_ids[1],
+          status = "gg-chip",
+          size = "sm"
+        )
+      } else {
+        tagList(
+          pickerInput(
+            "selected_task_ids",
+            "Filter by Task ID:",
+            choices = task_ids,
+            selected = selected_ids,
+            multiple = TRUE,
+            options = list(
+              `actions-box` = TRUE,
+              `live-search` = FALSE,
+              `none-selected-text` = "Filter by Task ID:",
+              `width` = '100%',
+              container = FALSE,
+              size = 10
+            )
           )
         )
-      )
+      }
     })
     
-    # Filtered data
+    # Filtered data. input$selected_task_ids is either a multi-select vector of
+    # row-number strings (classic picker) or a single value that's either the
+    # sentinel "all" or one row-number string (new-design radio chips) — handle
+    # both shapes here rather than branch on input$new_design, since the value
+    # already reflects whichever widget is currently rendered.
     filtered_df <- reactive({
       req(df_react())
       df <- df_react()
-      
-      if (is.null(input$selected_task_ids) || length(input$selected_task_ids) == 0) {
+
+      sel <- input$selected_task_ids
+      if (is.null(sel) || length(sel) == 0) {
         return(df)   # if none selected, show all
       }
-      
-      df[input$selected_task_ids, , drop = FALSE]   # subset by row numbers
+
+      ids <- sel[sel != "all"]
+      if (length(ids) == 0) {
+        return(df)   # "all" chip selected (or nothing left after dropping it)
+      }
+
+      df[ids, , drop = FALSE]   # subset by row numbers
     })
     
     # Show table
@@ -5775,11 +5998,22 @@ server <- function(input, output, session) {
     observeEvent(input$select_all_tasks, {
       req(df_react())
       task_ids <- seq_len(nrow(df_react()))
-      updateSelectInput(session, "selected_task_ids", selected = task_ids)
+      # the widget differs per design mode (single-select chips vs multi-select
+      # picker), so use the matching update function
+      if (isTRUE(input$new_design)) {
+        updateRadioGroupButtons(session, "selected_task_ids", selected = "all")
+      } else {
+        updateSelectInput(session, "selected_task_ids", selected = task_ids)
+      }
     })
-    
+
     observeEvent(input$deselect_all_tasks, {
-      updateSelectInput(session, "selected_task_ids", selected = character(0))
+      if (isTRUE(input$new_design)) {
+        # a radio chip row can't be "empty" — "all" already means unfiltered
+        updateRadioGroupButtons(session, "selected_task_ids", selected = "all")
+      } else {
+        updateSelectInput(session, "selected_task_ids", selected = character(0))
+      }
     })
     
     #---------logic for select/deselect all ends ----------------------
@@ -7393,9 +7627,12 @@ server <- function(input, output, session) {
                "Select a single track to share it."))
     }
     div(
-      style = "margin-top: 10px;",
+      # flex:1 only takes effect once the enclosing .gg-track-actions-row is a
+      # flex container, i.e. only when the new design's stylesheet is active
+      style = "margin-top: 10px; flex: 1;",
       actionButton("open_share_track_modal", "Share this track",
                    icon = icon("share-alt"),
+                   class = "gg-btn-accent",
                    style = "width: 150px;")
     )
   })
