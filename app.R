@@ -631,10 +631,9 @@ ui <- page_sidebar(
               size = 10
             )
           ),
-          # Active event-filter banner + "show all" reset. Only visible while an
-          # event is selected; reframes the narrowed game/player lists as an
-          # intentional filter rather than missing data.
-          uiOutput("event_filter_banner")
+          # Deselect button. Only visible while an event is selected; lets the
+          # user drop the filter and get the full game list back.
+          uiOutput("clear_event_filter_ui")
       )
     ),
 
@@ -3178,42 +3177,22 @@ server <- function(input, output, session) {
     }
   }, ignoreNULL = FALSE)
 
-  # Active-filter banner: shown only while an event is selected. States the
-  # event name + how many players are in the filtered view, and offers a
-  # one-click "Show all players" reset. An empty event shows a gentle hint.
-  output$event_filter_banner <- renderUI({
-    if (!event_is_active()) return(NULL)
-
-    ev_name <- names(events_choices_rv())[match(input$selected_event, events_choices_rv())]
-    if (is.na(ev_name)) ev_name <- "event"
-
-    tracks <- selected_game_tracks_rv()
-    n <- if (is.null(tracks) || NROW(tracks) == 0) 0 else NROW(tracks)
-    game_selected <- !is.null(input$selected_games) && nzchar(input$selected_games)
-
-    # The count is scoped to the SELECTED GAME within the event (not the whole
-    # event), so the wording says "for this game" to avoid implying an
-    # event-wide total.
-    body <- if (!game_selected) {
-      paste0("Filtered to event “", ev_name, "”. Select a game to see its plays.")
-    } else if (n == 0) {
-      paste0("No plays for this game in event “", ev_name,
-             "” yet. Share the event's QR PDF to start collecting.")
-    } else {
-      paste0("Showing ", n, " player", if (n == 1) "" else "s",
-             " for this game in event “", ev_name, "”.")
-    }
-
+  # Deselect button: shown only while an event is selected. Named for what it
+  # actually does — drop the event filter and go back to the full game list.
+  # (It deliberately carries no player/play count: the count was scoped to the
+  # selected game and counted tracks rather than distinct people, which read as
+  # "these are all the players that exist".)
+  output$clear_event_filter_ui <- renderUI({
+    req(event_is_active())
     div(
-      style = "background:#e7f5fb; border:1px solid #b6e2f2; border-radius:6px; padding:8px 10px; margin-top:8px; font-size:13px;",
-      tags$span(style = "margin-right:6px;", "\U0001F50E"),
-      tags$span(body),
-      actionLink("clear_event_filter", "Show all players ✕",
-                 style = "display:block; margin-top:6px; font-weight:600;")
+      style = "margin-top: 8px;",
+      actionButton("clear_event_filter", "Clear event filter",
+                   icon = icon("times"),
+                   style = "width: 100%;")
     )
   })
 
-  # "Show all players" reset → clears the event filter.
+  # Deselect → clears the event filter.
   observeEvent(input$clear_event_filter, {
     updatePickerInput(session, "selected_event", selected = EVENT_NONE)
   })
