@@ -2122,12 +2122,67 @@ server <- function(input, output, session) {
       task_cat <- try(evts$task$category[s], silent = TRUE)
       task_cat <- if (inherits(task_cat, "try-error")) NA_character_ else as.character(task_cat)
       
+      # Information tasks legitimately may not contain task$type.
+      # Normalize them explicitly instead of leaving task_type = NA.
+      if (
+        (length(task_type) == 0 || is.na(task_type) || !nzchar(task_type)) &&
+        !is.na(task_cat) &&
+        task_cat == "info"
+      ) {
+        task_type <- "info"
+      }
+      
       assignment <- try(evts$task$question$text[s], silent = TRUE)
       assignment <- if (inherits(assignment, "try-error")) NA_character_ else as.character(assignment)
       
+      # ---- Calculate task duration ----
       t_start <- parse_ts(evts$timestamp[s])
       t_end   <- parse_ts(evts$timestamp[final_idx])
-      time_s  <- if (is.na(t_start) || is.na(t_end)) NA_integer_ else as.integer(floor(difftime(t_end, t_start, units="secs")))
+      
+      # Track whether duration had to be estimated from the next INIT_TASK
+      used_next_task_time_fallback <- FALSE
+      
+      # FALLBACK:
+      # Sometimes an unfinished task contains only its INIT_TASK event.
+      # In that case final_idx == s, which would otherwise give 0 seconds.
+      #
+      # If there is a following task, use the next task's INIT_TASK timestamp
+      # as the end of the current unfinished task.
+      if (
+        final_idx == s &&
+        k < nrow(sl)
+      ) {
+        next_task_time <- parse_ts(
+          evts$timestamp[sl$start[k + 1]]
+        )
+        
+        if (
+          !is.na(t_start) &&
+          !is.na(next_task_time) &&
+          next_task_time > t_start
+        ) {
+          t_end <- next_task_time
+          used_next_task_time_fallback <- TRUE
+        }
+      }
+      
+      # Final duration in whole seconds
+      time_s <- if (
+        is.na(t_start) ||
+        is.na(t_end)
+      ) {
+        NA_integer_
+      } else {
+        as.integer(
+          floor(
+            difftime(
+              t_end,
+              t_start,
+              units = "secs"
+            )
+          )
+        )
+      }
       
       # tries / attempts
       # Some real-world navigation tasks do not create ON_OK_CLICKED.
@@ -2153,7 +2208,13 @@ server <- function(input, output, session) {
         
         # Extra fallback: if it is a navigation task with time spent but no OK event,
         # count it as one played attempt.
-      } else if (tries == 0L && is_nav_task && !is.na(time_s) && time_s > 0L) {
+      } else if (
+        tries == 0L &&
+        is_nav_task &&
+        !used_next_task_time_fallback &&
+        !is.na(time_s) &&
+        time_s > 0L
+      ) {
         tries <- 1L
         
         # Extra safety for theme/free tasks if a player interacted but no OK was stored.
@@ -2188,7 +2249,12 @@ server <- function(input, output, session) {
         } else {
           is_nav_guided <- !is.na(task_type) && task_type %in% c("nav-arrow", "nav-text", "nav-photo")
           
-          if (is_nav_guided && !is.na(time_s) && time_s > 0) {
+          if (
+            is_nav_guided &&
+            !used_next_task_time_fallback &&
+            !is.na(time_s) &&
+            time_s > 0
+          ) {
             status  <- "Correct"
             correct <- TRUE
           } else {
@@ -2420,6 +2486,15 @@ server <- function(input, output, session) {
     )
   }
   
+  pretty_task_type_vec <- function(x) {
+  vapply(
+    unname(as.character(x)),
+    pretty_task_type,
+    FUN.VALUE = character(1),
+    USE.NAMES = FALSE
+  )
+}
+  
   build_big_table_export_df <- function(track) {
     sm <- task_summary(track)
     
@@ -2428,10 +2503,9 @@ server <- function(input, output, session) {
     }
     
     df <- data.frame(
-      `Task ID` = sm$taskNo,
-      Type = vapply(sm$task_type, pretty_task_type, character(1)),
-      Assignment = clean_export_text(sm$assignment),
-      Answer = clean_export_text(sm$answer_txt),
+      Type = pretty_task_type_vec(sm$task_type),
+      Assignment = sm$assignment,
+      Answer = sm$answer_txt,
       `Time (s)` = sm$time_s,
       Tries = sm$tries,
       `Viewing dir. (°)` = format_bearing_deg(sm$viewing_direction),
@@ -2439,6 +2513,9 @@ server <- function(input, output, session) {
       `Pointing dir. (°)` = format_bearing_deg(sm$pointing_direction),
       `Rotation (°)` = format_angle_deg(sm$rotation_angle),
       `Final answer (°)` = format_bearing_deg(sm$final_answer_direction),
+      `Error (°/m)` = sm$error_txt,
+      
+      row.names = NULL,
       check.names = FALSE,
       stringsAsFactors = FALSE
     )
@@ -2462,13 +2539,32 @@ server <- function(input, output, session) {
   }
   
   apply_task_id_filter_export <- function(df, selected_task_ids) {
-    if (is.null(df) || nrow(df) == 0) return(df)
+    if (is.null(df) || nrow(df) == 0) {
+      return(df)
+    }
     
+    # Same behaviour as the All tasks table:
+    # nothing selected means show/export all tasks
     if (is.null(selected_task_ids) || length(selected_task_ids) == 0) {
       return(df)
     }
     
-    df[as.character(df[["Task ID"]]) %in% as.character(selected_task_ids), , drop = FALSE]
+    # pickerInput returns character values such as "1", "2", "3"
+    task_rows <- suppressWarnings(as.integer(selected_task_ids))
+    
+    # Keep only valid row numbers
+    task_rows <- task_rows[
+      !is.na(task_rows) &
+        task_rows >= 1L &
+        task_rows <= nrow(df)
+    ]
+    
+    # If none of the supplied IDs are valid
+    if (length(task_rows) == 0) {
+      return(df[0, , drop = FALSE])
+    }
+    
+    df[task_rows, , drop = FALSE]
   }
   ######## MAKING HELPER FUNCTION FOR ADDING THE NEW DOWNLOAD BUTTON IN BIG TABLE 'SAVE ALL TO CSV' END #############
   
@@ -4113,7 +4209,7 @@ server <- function(input, output, session) {
     sm <- task_summary(data[[1]])
     
     df <- data.frame(
-      Type = vapply(sm$task_type, pretty_task_type, character(1)),
+      Type = pretty_task_type_vec(sm$task_type),
       Assignment = sm$assignment,
       Answer = sm$answer_txt,
       `Time (s)` = sm$time_s,
@@ -4124,6 +4220,8 @@ server <- function(input, output, session) {
       `Rotation (°)` = format_angle_deg(sm$rotation_angle),
       `Final answer (°)` = format_bearing_deg(sm$final_answer_direction),
       `Error (°/m)` = sm$error_txt,
+      
+      row.names = NULL,
       check.names = FALSE,
       stringsAsFactors = FALSE
     )
@@ -5949,7 +6047,7 @@ server <- function(input, output, session) {
     sm <- task_summary(data[[1]])
     
     df <- data.frame(
-      Type = vapply(sm$task_type, pretty_task_type, character(1)),
+      Type = pretty_task_type_vec(sm$task_type),
       Assignment = sm$assignment,
       Answer = sm$answer_txt,
       `Time (s)` = sm$time_s,
@@ -5960,6 +6058,8 @@ server <- function(input, output, session) {
       `Rotation (°)` = format_angle_deg(sm$rotation_angle),
       `Final answer (°)` = format_bearing_deg(sm$final_answer_direction),
       `Error (°/m)` = sm$error_txt,
+      
+      row.names = NULL,
       check.names = FALSE,
       stringsAsFactors = FALSE
     )
