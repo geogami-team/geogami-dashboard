@@ -2648,6 +2648,46 @@ server <- function(input, output, session) {
     label
   }
   
+  # Initial avatar position (lng, lat in the VE's units: x / 111000, z / 112000) that the
+  # task_no-th task starts with, or NULL if the task has none.
+  task_initial_avatar_lnglat <- function(evts, task_no) {
+    if (is.null(evts) || is.null(evts$type)) return(NULL)
+    init <- which(evts$type == "INIT_TASK")
+    if (!is.finite(task_no) || task_no < 1 || task_no > length(init)) return(NULL)
+
+    xy <- tryCatch({
+      coords <- evts$task$question$initialAvatarPosition$position$geometry$coordinates
+      # jsonlite gives a matrix when every event has coordinates, a list otherwise
+      if (is.matrix(coords)) coords[init[task_no], ] else coords[[init[task_no]]]
+    }, error = function(e) NULL)
+
+    xy <- num_vec(xy)
+    if (length(xy) < 2 || !all(is.finite(xy[1:2]))) return(NULL)
+    xy[1:2]
+  }
+
+  # At the start of a task the UI can record the avatar before the teleport to the task's
+  # initial position has arrived, so the first waypoint(s) of the task still hold the previous
+  # task's last location. Drawn as a track that is a line from where the previous task ended to
+  # the initial position, most visible in info tasks where the avatar never moves.
+  # Returns how many leading waypoints of the task to drop: the ones before the first of the
+  # first few waypoints that is at the initial position. 0 if the task has no initial position,
+  # its track already starts there, or none of the first few waypoints reaches it.
+  stale_leading_waypoint_count <- function(evts, task_no, lng, lat, tol_m = 5, lookahead = 5) {
+    init_xy <- task_initial_avatar_lnglat(evts, task_no)
+    if (is.null(init_xy)) return(0L)
+
+    n <- min(length(lng), length(lat), lookahead)
+    if (n < 2) return(0L)
+
+    # VE coordinates are x / 111000 and z / 112000, so convert the offsets back to metres
+    d <- sqrt(((lng[seq_len(n)] - init_xy[1]) * 111000)^2 +
+              ((lat[seq_len(n)] - init_xy[2]) * 112000)^2)
+    hit <- which(is.finite(d) & d <= tol_m)
+    if (!length(hit)) return(0L)
+    as.integer(hit[1] - 1L)
+  }
+
   get_task_trajectory_df <- function(track, task_no) {
     if (is.null(track) || is.null(track$waypoints)) {
       return(data.frame(lng = numeric(0), lat = numeric(0)))
@@ -2703,7 +2743,13 @@ server <- function(input, output, session) {
     if (nrow(df) > 1 && any(!is.na(df$ts))) {
       df <- df[order(df$ts), , drop = FALSE]
     }
-    
+
+    # drop the leading waypoints that still hold the previous task's last position
+    n_stale <- stale_leading_waypoint_count(track$events, task_no, df$lng, df$lat)
+    if (n_stale > 0) {
+      df <- df[-seq_len(n_stale), , drop = FALSE]
+    }
+
     df
   }
   
@@ -3727,6 +3773,14 @@ server <- function(input, output, session) {
           }
         }
       }
+    }
+
+    #Drop the leading waypoints that still hold the previous task's last position
+    n_stale <- stale_leading_waypoint_count(data[[1]]$events, num_value_num(), unlist(traj_lng), unlist(traj_lat))
+    if (n_stale > 0) {
+      traj_lng <- traj_lng[-seq_len(n_stale)]
+      traj_lat <- traj_lat[-seq_len(n_stale)]
+      accuracy <- accuracy[-seq_len(n_stale)]
     }
     
     #Compute again time (with way points)
@@ -5524,6 +5578,14 @@ server <- function(input, output, session) {
           accuracy <- append(accuracy, 1)
         }
       }
+    }
+
+    #Drop the leading waypoints that still hold the previous task's last position
+    n_stale <- stale_leading_waypoint_count(data[[1]]$events, num_value_num(), unlist(traj_lng), unlist(traj_lat))
+    if (n_stale > 0) {
+      traj_lng <- traj_lng[-seq_len(n_stale)]
+      traj_lat <- traj_lat[-seq_len(n_stale)]
+      accuracy <- accuracy[-seq_len(n_stale)]
     }
     
     #Compute again time (with way points)
