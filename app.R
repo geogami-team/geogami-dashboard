@@ -2662,7 +2662,8 @@ server <- function(input, output, session) {
       return(FALSE)
     }
     
-    val <- env_map[[as.character(input$selected_games)]]
+    # Event games may be absent from the ordinary game list; use NA for missing IDs.
+    val <- unname(env_map[as.character(input$selected_games)])
     
     if (is.null(val) || length(val) == 0 || is.na(val)) {
       return(FALSE)
