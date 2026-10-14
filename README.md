@@ -122,6 +122,11 @@ Analyzing the exported track JSON files yourself (R, Python, …)? The complete 
 
 `app.R` is intentionally a single file to keep the deployment surface small. Helpers for HTTP calls (`fetch_games_data_from_server`, `api_request`, `api_get`) sit at the top, followed by the UI definition (`page_sidebar(...)`) and a `server <- function(input, output, session)` block.
 
+Run the regression checks from this directory with `Rscript tests/regression.R`.
+They exercise Shiny sessions with synthetic tracks and mocked API requests,
+including incomplete tracks, missing GPS data, standalone uploads, API failures,
+and sharing changes. They do not contact the live API or modify production data.
+
 ## Deployment
 
 The project deploys cleanly to anything that can run a Docker container with port 3838 exposed. Recommended setup:

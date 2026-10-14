@@ -89,31 +89,47 @@ add_drawing_features <- function(map, feats) {
 }
 
 # Function to fetch/load list of user games / games that user has access to their tracks
-fetch_games_data_from_server <- function(url, token) {
-  message("Fetched data, now processing...")
-  # Adds a space between 'Bearer' and the token
-  auth_header <- paste("Bearer", token)  
-  
-  # Make the request with Authorization header
-  res <- GET(url, add_headers(Authorization = auth_header))
-  
-  # Handle the response
-  if (status_code(res) == 200) {
-    data <- fromJSON(content(res, "text", encoding = "UTF-8"))
-    if (length(data) == 0) {
-      return(NULL)  # No content found
-    }
-    # return the content of the response
-    message("Finished fetching data... m")
-    return(data$content)
+fetch_games_data_from_server <- function(url, token, request = httr::VERB) {
+  result <- api_get(url, token, request = request)
+  if (result$status == 200) return(result$data$content)
+
+  msg <- if (result$status == 401) {
+    "Your session has expired. Please reopen the dashboard from GeoGami."
+  } else if (result$status == 403) {
+    "You do not have access to this data."
   } else {
-    if (status_code(res) == 401) {
-      warning("Unauthorized: Invalid or expired token.")
-    } else {
-      warning(paste("Failed to fetch games. Status code:", status_code(res)))
-    }
-    return(NULL)
+    "Could not load data from GeoGami. Please try again."
   }
+  message(msg)
+  if (!is.null(shiny::getDefaultReactiveDomain())) {
+    shiny::showNotification(msg, type = "error", id = "dashboard_api_error")
+  }
+  NULL
+}
+
+# Keep transport and response errors out of Shiny observers. Never retry mutations.
+api_call <- function(url, token, body = NULL, method = "GET", request = httr::VERB) {
+  tryCatch({
+    args <- list(method, url, httr::add_headers(Authorization = paste("Bearer", token)),
+                 httr::timeout(30))
+    if (method != "GET") {
+      args <- c(args, list(httr::content_type_json(), body = body, encode = "json"))
+    }
+    res <- do.call(request, args)
+    status <- httr::status_code(res)
+    data <- tryCatch(
+      jsonlite::fromJSON(httr::content(res, as = "text", encoding = "UTF-8")),
+      error = function(e) NULL
+    )
+    if (is.null(data) || !is.list(data)) {
+      return(list(status = if (status >= 200 && status < 300) 502L else status,
+                  data = list(message = "GeoGami returned an invalid response. Please try again.")))
+    }
+    list(status = status, data = data)
+  }, error = function(e) {
+    list(status = 0L,
+         data = list(message = "Could not reach GeoGami. Please try again."))
+  })
 }
 
 # ── API helpers for share/unshare feature ────────────────────────────
@@ -123,36 +139,14 @@ fetch_games_data_from_server <- function(url, token) {
 
 # POST or DELETE JSON to an API endpoint.
 # Used by the share modal to add/remove emails from game.sharedWith.
-api_request <- function(url, token, body = list(), method = "POST") {
-  auth_header <- paste("Bearer", token)
-  if (method == "DELETE") {
-    res <- httr::DELETE(url, add_headers(Authorization = auth_header),
-                        body = body, encode = "json",
-                        content_type_json())
-  } else {
-    res <- httr::POST(url, add_headers(Authorization = auth_header),
-                      body = body, encode = "json",
-                      content_type_json())
-  }
-  # Return status + parsed body so callers can check for errors and
-  # update the UI with the server's response (e.g. updated sharedWith list).
-  list(
-    status = status_code(res),
-    data = tryCatch(fromJSON(content(res, "text", encoding = "UTF-8")),
-                    error = function(e) list())
-  )
+api_request <- function(url, token, body = list(), method = "POST", request = httr::VERB) {
+  api_call(url, token, body, method, request)
 }
 
 # GET JSON from an API endpoint, returning status + body.
 # Used to fetch the current sharedWith list when the modal opens.
-api_get <- function(url, token) {
-  auth_header <- paste("Bearer", token)
-  res <- httr::GET(url, add_headers(Authorization = auth_header))
-  list(
-    status = status_code(res),
-    data = tryCatch(fromJSON(content(res, "text", encoding = "UTF-8")),
-                    error = function(e) list())
-  )
+api_get <- function(url, token, request = httr::VERB) {
+  api_call(url, token, request = request)
 }
 
 # commited out as there was an issue that it works fine locally but not on the server
@@ -1037,6 +1031,63 @@ server <- function(input, output, session) {
     if (length(x) == 0) return(NA)
     x[1]
   }
+
+  # Optional fields can be absent for every event in an unfinished track.
+  # Pad scalar columns without changing the recorded geometry or event order.
+  normalize_dashboard_track <- function(track) {
+    fill_record <- function(record, fields, n) {
+      if (is.null(record) || length(record) == 0) {
+        record <- data.frame(row.names = seq_len(n))
+      }
+      shiny::validate(shiny::need(is.data.frame(record), "Unsupported track data format."))
+      for (name in names(fields)) {
+        default <- fields[[name]]
+        if (is.list(default)) {
+          record[[name]] <- fill_record(record[[name]], default, n)
+        } else {
+          x <- record[[name]]
+          values <- rep(default, n)
+          keep <- seq_len(min(length(x), n))
+          if (is.atomic(x) && is.null(dim(x))) {
+            values[keep] <- x[keep]
+          } else {
+            for (i in keep) values[i] <- safe_scalar(x[i])
+          }
+          if (is.numeric(default)) values <- suppressWarnings(as.numeric(values))
+          record[[name]] <- values
+        }
+      }
+      record
+    }
+    shiny::validate(shiny::need(is.list(track), "Unsupported track data format."))
+    events <- track$events
+    n <- if (is.null(events) || length(events) == 0) 0L else NROW(events)
+    track$events <- fill_record(events, list(
+      type = NA_character_, timestamp = NA_character_, correct = NA,
+      task = list(`_id` = NA_character_, type = NA_character_, category = NA_character_,
+                  evaluate = NA_character_, question = list(text = NA_character_, mode = NA_character_),
+                  answer = list(type = NA_character_), settings = list(accuracy = NA_real_)),
+      answer = list(correct = NA, text = NA_character_, numberInput = NA_real_,
+                    selectedChoice = list(value = NA_character_)),
+      position = list(coords = list(longitude = NA_real_, latitude = NA_real_)),
+      clickPosition = list(longitude = NA_real_, latitude = NA_real_)
+    ), n)
+    waypoints <- track$waypoints
+    n <- if (is.null(waypoints) || length(waypoints) == 0) 0L else NROW(waypoints)
+    track$waypoints <- fill_record(waypoints, list(
+      taskNo = NA_integer_, timestamp = NA_character_,
+      position = list(coords = list(longitude = NA_real_, latitude = NA_real_, accuracy = NA_real_))
+    ), n)
+    track
+  }
+
+  coordinate_pair_at <- function(coords, i) {
+    xy <- tryCatch(if (is.matrix(coords)) coords[i, ] else coords[[i]],
+                   error = function(e) NULL)
+    xy <- suppressWarnings(as.numeric(unlist(xy, use.names = FALSE)))
+    if (length(xy) < 2 || !all(is.finite(xy[1:2]))) return(NULL)
+    xy[1:2]
+  }
   
   normalize_deg <- function(x) {
     x <- num(x)
@@ -1044,6 +1095,7 @@ server <- function(input, output, session) {
   }
   
   format_numeric_clean <- function(x, digits = 2) {
+    if (!length(x)) return(character(0))
     x <- num(x)
     out <- rep(NA_character_, length(x))
     ok <- is.finite(x)
@@ -1052,6 +1104,7 @@ server <- function(input, output, session) {
   }
   
   format_bearing_deg <- function(x, digits = 2) {
+    if (!length(x)) return(character(0))
     x <- normalize_deg(x)
     format_numeric_clean(x, digits)
   }
@@ -2027,7 +2080,7 @@ server <- function(input, output, session) {
   format_answer_value <- function(evts, idx) {
     # idx should be the chosen "final" event index for the task block
     atype <- try(evts$task$answer$type[idx], silent = TRUE)
-    if (inherits(atype, "try-error") || is.null(atype) || length(atype) == 0) return(NA_character_)
+    if (inherits(atype, "try-error") || is.null(atype) || length(atype) == 0 || is.na(atype)) return(NA_character_)
     
     if (atype == "TEXT") {
       v <- try(evts$answer$text[idx], silent = TRUE)
@@ -2098,6 +2151,7 @@ server <- function(input, output, session) {
     if (is.null(track) || is.null(track$events)) {
       return(data.frame())
     }
+    track <- normalize_dashboard_track(track)
     evts <- track$events
     sl <- task_slices_by_init_safe(evts)
     if (!nrow(sl)) return(data.frame())
@@ -2991,6 +3045,7 @@ server <- function(input, output, session) {
     url <- paste0(api_url, "/track/", key)
     tr <- fetch_games_data_from_server(url, token)
     
+    if (!is.null(tr)) tr <- normalize_dashboard_track(tr)
     if (!is.null(tr) && !is.null(tr$events)) {
       tr$events <- fix_vr_distance_tasks(tr$events)
       tr$events <- fix_direction_tasks(tr$events)
@@ -3601,6 +3656,8 @@ server <- function(input, output, session) {
       shiny::need(!is.null(d), "No data returned for selected track.")
     )
     
+    d <- normalize_dashboard_track(d)
+
     # apply VR correction patch
     if (!is.null(d$events)) {
       d$events <- fix_vr_distance_tasks(d$events)
@@ -3623,7 +3680,11 @@ server <- function(input, output, session) {
     datapaths <- input$uploaded_json_file$datapath
     
     lapply(datapaths, function(path) {
-      d <- jsonlite::fromJSON(path)
+      d <- tryCatch(jsonlite::fromJSON(path), error = function(e) {
+        showNotification("The uploaded file is not valid track JSON.", type = "error")
+        shiny::validate(shiny::need(FALSE, "The uploaded file is not valid track JSON."))
+      })
+      d <- normalize_dashboard_track(d)
       if (!is.null(d$events)) {
         d$events <- fix_vr_distance_tasks(d$events)
         d$events <- fix_direction_tasks(d$events)
@@ -3645,6 +3706,8 @@ server <- function(input, output, session) {
     data_list <- lapply(sel, function(track_id) {
       url <- paste0(apiURL_rv(), "/track/", track_id)
       d <- fetch_games_data_from_server(url, accessToken_rv())
+      shiny::validate(shiny::need(!is.null(d), "No data returned for a selected track."))
+      d <- normalize_dashboard_track(d)
       if (!is.null(d$events)) {
         d$events <- fix_vr_distance_tasks(d$events)
         d$events <- fix_direction_tasks(d$events)
@@ -3897,23 +3960,23 @@ server <- function(input, output, session) {
     pict_quest <- data[[1]]$events$task$question$photo
     ans_type <- data[[1]]$events$task$answer$type    #decides how to format the “Answer” column.
     
-    for (j in seq_len(length(id) - 1)) {
-      if ((!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
-        correct_flag <- data[[1]]$events$answer$correct[j]
+    for (j in seq_len(max(length(id) - 1L, 0L))) {
+      if (isTRUE(!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
+        correct_flag <- safe_scalar(data[[1]]$events$answer$correct[j])
         
         ans_value <- NA  # Default
         
-        if (ans_type[j] == "TEXT") {
+        if (isTRUE(ans_type[j] == "TEXT")) {
           ans_text <- data[[1]]$events$answer$text[j]
           if (!is.na(correct_flag)) {
             ans_value <- paste(ifelse(correct_flag == "TRUE", "Correct", "Incorrect"), ans_text)
           }
-        } else if (ans_type[j] == "MULTIPLE_CHOICE_TEXT") {
+        } else if (isTRUE(ans_type[j] == "MULTIPLE_CHOICE_TEXT")) {
           choice_val <- data[[1]]$events$answer$selectedChoice$value[j]
           if (!is.na(correct_flag)) {
             ans_value <- paste(ifelse(correct_flag == "TRUE", "Correct", "Incorrect"), choice_val)
           }
-        } else if (ans_type[j] == "NUMBER") {
+        } else if (isTRUE(ans_type[j] == "NUMBER")) {
           num_val <- data[[1]]$events$answer$numberInput[j]
           if (!is.na(correct_flag)) {
             ans_value <- paste(ifelse(correct_flag == "TRUE", "Correct", "Incorrect"), num_val)
@@ -3938,8 +4001,8 @@ server <- function(input, output, session) {
     
     dist <- list()
     
-    for (j in 1:(length(id) - 1)) {
-      if ((!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
+    for (j in seq_len(max(length(id) - 1L, 0L))) {
+      if (isTRUE(!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
         dist <- append(dist, format_task_error(data[[1]]$events, j))
       }
     }
@@ -3955,8 +4018,8 @@ server <- function(input, output, session) {
     tps <- data[[1]]$events$timestamp
     time1 <- as.POSIXct(tps[1], format = "%Y-%m-%dT%H:%M:%OS",tz = "UTC")
     tmp <- list()
-    for (j in 1:(length(id) - 1)) {
-      if ((!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
+    for (j in seq_len(max(length(id) - 1L, 0L))) {
+      if (isTRUE(!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
         time2 <- as.POSIXct(tps[j], format = "%Y-%m-%dT%H:%M:%OS",tz = "UTC")
         tmp <- append(tmp, paste(floor(as.numeric(time2 - time1, units = "secs")),"s"))
         time1 <- as.POSIXct(tps[j+1], format = "%Y-%m-%dT%H:%M:%OS",tz = "UTC")
@@ -3967,11 +4030,11 @@ server <- function(input, output, session) {
     #Computing tries number for each task
     tries = 0
     try <- list()
-    for (j in 1:(length(id) - 1)) {
+    for (j in seq_len(max(length(id) - 1L, 0L))) {
       if (ev[j] == "ON_OK_CLICKED") { #Answer when the player clicks on OK
         tries <- tries + 1
       }
-      if ((!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
+      if (isTRUE(!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
         try <- append(try, tries)
         tries = 0
       }
@@ -4028,12 +4091,15 @@ server <- function(input, output, session) {
     
     
     #Recovering answers position for the map
-    for (i in 1:(length(id)-1)) {
+    for (i in seq_len(max(length(id) - 1L, 0L))) {
       if (!is.na(cat_task[i])) {
         if ((cat_task[i] == "nav") && (cou == num_value_num())) {
-          long <- append(long, coor[[i]][1])
-          lati <- append(lati, coor[[i]][2])
-          accuracy_rad <- accuracy_radius[[i]]
+          xy <- coordinate_pair_at(coor, i)
+          if (!is.null(xy)) {
+            long <- append(long, xy[1])
+            lati <- append(lati, xy[2])
+          }
+          accuracy_rad <- get_task_accuracy(data[[1]]$events, i, kind = "nav")
           t <- type_task[i]
         }
         if ((cat_task[i] == "info") && (cou == num_value_num())) {
@@ -4043,11 +4109,17 @@ server <- function(input, output, session) {
       }
       if (!is.na(type_task[i])) { #target point for theme task
         if ((type_task[i] == "theme-loc") && (ev[i] == "ON_OK_CLICKED") && (cou == num_value_num())) {
-          lng_targ <- append(lng_targ, targ[[i]][1])
-          lat_targ <- append(lat_targ, targ[[i]][2])
-          lng_true <- append(lng_true, coor_true$longitude[[i]])
-          lat_true <- append(lat_true, coor_true$latitude[[i]])
-          accuracy_rad <- accuracy_radius[[i]]
+          xy <- get_click_lonlat(data[[1]]$events, i)
+          if (all(is.finite(xy))) {
+            lng_targ <- append(lng_targ, xy[1])
+            lat_targ <- append(lat_targ, xy[2])
+          }
+          xy <- c(coor_true$longitude[i], coor_true$latitude[i])
+          if (all(is.finite(xy))) {
+            lng_true <- append(lng_true, xy[1])
+            lat_true <- append(lat_true, xy[2])
+          }
+          accuracy_rad <- get_task_accuracy(data[[1]]$events, i, kind = "nav")
           t <- type_task[i]
         }
         if ((type_task[i] == "theme-loc") && (cou == num_value_num())) { #Always having the task type shown for theme-localisation
@@ -4140,22 +4212,22 @@ server <- function(input, output, session) {
             }
           }
         }
-        if ((type_task[i] == "free") && (cou == num_value_num()) && length(drawing_point_lat) != 0 && !is.na(drawing_point_lat[[i]]) && ans_type[[i]] == "DRAW") {
+        if ((type_task[i] == "free") && (cou == num_value_num()) && length(drawing_point_lat) != 0 && !is.na(drawing_point_lat[[i]]) && isTRUE(ans_type[[i]] == "DRAW")) {
           dr_point_lat <- append(dr_point_lat, drawing_point_lat[[i]])
           dr_point_lng <- append(dr_point_lng, drawing_point_lng[[i]])
           t <- type_task[i]
         }
-        if ((type_task[i] == "free") && (cou == num_value_num()) && (length(drawing_point_lat) == 0 || is.na(drawing_point_lat[[i]])) && ans_type[[i]] == "DRAW") { #correcting error to visualize draw
+        if ((type_task[i] == "free") && (cou == num_value_num()) && (length(drawing_point_lat) == 0 || is.na(drawing_point_lat[[i]])) && isTRUE(ans_type[[i]] == "DRAW")) { #correcting error to visualize draw
           mr <- TRUE
           t <- type_task[i]
         }
-        if ((type_task[i] == "free") && (cou == num_value_num()) && ans_type[[i]] != "DRAW") {
+        if ((type_task[i] == "free") && (cou == num_value_num()) && !isTRUE(ans_type[[i]] == "DRAW")) {
           mr <- TRUE
           t <- type_task[i]
         }
         # Capture the final stored drawing geometry for the selected DRAW task.
         if (has_drawing_col && (type_task[i] == "free") && (cou == num_value_num()) &&
-            ans_type[[i]] == "DRAW" && ev[i] == "ON_OK_CLICKED") {
+            isTRUE(ans_type[[i]] == "DRAW") && ev[i] == "ON_OK_CLICKED") {
           feats_i <- try(data[[1]]$events$answer$drawing$features[[i]], silent = TRUE)
           if (!inherits(feats_i, "try-error") && is.data.frame(feats_i) && nrow(feats_i) > 0) {
             drawing_feats <- feats_i
@@ -4166,7 +4238,7 @@ server <- function(input, output, session) {
       if (is.na(type_task[i]) && (i != 1) && (cou == num_value_num())) { #na task
         mr <- TRUE
       }
-      if ((!is.na(id[i]) && (i != 1) && (id[i] != id[i + 1])) || i == (length(id) - 1)) {
+      if (isTRUE(!is.na(id[i]) && (i != 1) && (id[i] != id[i + 1])) || i == (length(id) - 1)) {
         cou <- cou + 1
       }
     }
@@ -4176,9 +4248,11 @@ server <- function(input, output, session) {
     traj_lat <- list()
     accuracy <- list()
     task_number <- data[[1]]$waypoints$taskNo #Task number
-    for (i in 1:length(task_number)) {
+    for (i in seq_along(task_number)) {
       if (!is.null(task_number[i])) {
-        if (task_number[i] == num_value_num()) {
+        if (isTRUE(task_number[i] == num_value_num()) &&
+            all(is.finite(c(data[[1]]$waypoints$position$coords$longitude[i],
+                            data[[1]]$waypoints$position$coords$latitude[i])))) {
           traj_lng <- append(traj_lng, data[[1]]$waypoints$position$coords$longitude[i])
           traj_lat <- append(traj_lat, data[[1]]$waypoints$position$coords$latitude[i])
           if (length(data[[1]]$waypoints$position$coords$accuracy) != 0) {
@@ -4203,10 +4277,10 @@ server <- function(input, output, session) {
     time_waypoints <- list()
     tps_waypoints <- data[[1]]$waypoints$timestamp
     
-    for (k in 1:length(tmp)) {
+    for (k in seq_along(tmp)) {
       if (tmp[[k]] == "0 s") {
-        for (i in 1:length(task_number)) {
-          if (task_number[i] == k) {
+        for (i in seq_along(task_number)) {
+          if (isTRUE(task_number[i] == k)) {
             time_waypoints <- append(time_waypoints, tps_waypoints[[i]])
           }
         }
@@ -4236,7 +4310,7 @@ server <- function(input, output, session) {
           lat_2 <- traj_lat[[k+1]][1]
           lng_2 <- traj_lng[[k+1]][1]
           d <- R * acos(sin(lat_1*deg_to_rad)*sin(lat_2*deg_to_rad) + cos(lat_1*deg_to_rad)*cos(lat_2*deg_to_rad)*cos((lng_2 - lng_1)*deg_to_rad))
-          if (accuracy[[k]] >= 20) {
+          if (isTRUE(accuracy[[k]] >= 20)) {
             traj_lat[k] <- traj_lat[k+1] #Filter GPS coordinate errors
             traj_lng[k] <- traj_lng[k+1]
           }
@@ -4247,7 +4321,7 @@ server <- function(input, output, session) {
     rg <- cbind(unlist(typ), unlist(cons), unlist(ans), unlist(tmp), unlist(try), unlist(dist))
     #print(rg)
     
-    for (i in 1:(nrow(rg))) {
+    for (i in seq_len(NROW(rg))) {
       if (((!is.na(rg[i,1]) && rg[i,1] == "nav-arrow") || (!is.na(rg[i,1]) && rg[i,1] == "nav-text")
            || (!is.na(rg[i,1]) && rg[i,1] == "nav-photo")) && rg[i,4] != "0 s" && is.na(rg[i,3])) {
         rg[i,3] <- "Correct"
@@ -4342,7 +4416,7 @@ server <- function(input, output, session) {
       
       n <- nrow(df)
       cur <- suppressWarnings(as.integer(input$num_value))
-      if (is.na(cur) || cur < 1 || cur > n) cur <- 1
+      if (length(cur) != 1 || is.na(cur) || cur < 1 || cur > n) cur <- 1
       
       update_main_task_pickers(
         session = session,
@@ -5195,8 +5269,8 @@ server <- function(input, output, session) {
       pict <- list()
       ans_photo <- list()
       
-      for (i in 1:(length(id) - 1)) {
-        if ((!is.na(id[i]) && (i != 1) && (id[i] != id[i + 1])) || i == (length(id) - 1)) {
+      for (i in seq_len(max(length(id) - 1L, 0L))) {
+        if (isTRUE(!is.na(id[i]) && (i != 1) && (id[i] != id[i + 1])) || i == (length(id) - 1)) {
           cou <- cou + 1
           
           pict <- append(pict, safe_photo_at(data[[1]]$events$task$question$photo, i))
@@ -5692,15 +5766,6 @@ server <- function(input, output, session) {
     req(num_value_num() && num_value_num() != 0 && num_value_num() > 0)
     df_react <- reactiveVal()
     
-    files <- list.files(json_dir, pattern = "\\.json$", full.names = FALSE)
-    files <- grep(input$selected_games, files, ignore.case = TRUE, value = TRUE)
-    
-    choices <- c("All Files" = "ALL", files)
-    
-    updatePickerInput(session, "selected_files",
-                      choices = choices,
-                      selected = NULL)
-    
     output$info_download <- renderText({
       ""
     })
@@ -5721,9 +5786,9 @@ server <- function(input, output, session) {
     ev <- data[[1]]$events$type #Name of the event
     pict_quest <- data[[1]]$events$task$question$photo
     ans_type <- data[[1]]$events$task$answer$type #what is required as the answer type
-    for (j in 1:(length(id) - 1)) {
-      if ((!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
-        if (!is.na(id[j]) && ans_type[j] == "TEXT") {
+    for (j in seq_len(max(length(id) - 1L, 0L))) {
+      if (isTRUE(!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
+        if (isTRUE(!is.na(id[j]) && ans_type[j] == "TEXT")) {
           if (!is.na(data[[1]]$events$answer$correct[j]) && data[[1]]$events$answer$correct[j] == "TRUE" ) {
             ans <- append(ans, paste("Correct", data[[1]]$events$answer$text[j])) #add text in input in the answer column
           }
@@ -5734,7 +5799,7 @@ server <- function(input, output, session) {
             ans <- append(ans, NA)
           }
         }
-        else if (!is.na(id[j]) && ans_type[j] == "MULTIPLE_CHOICE_TEXT") {
+        else if (isTRUE(!is.na(id[j]) && ans_type[j] == "MULTIPLE_CHOICE_TEXT")) {
           if (!is.na(data[[1]]$events$answer$correct[j]) && data[[1]]$events$answer$correct[j] == "TRUE") {
             ans <- append(ans, paste("Correct", data[[1]]$events$answer$selectedChoice$value[j])) #add the validated answer in the answer column
           }
@@ -5745,7 +5810,7 @@ server <- function(input, output, session) {
             ans <- append(ans, NA)
           }
         }
-        else if (!is.na(id[j]) && ans_type[j] == "NUMBER") {
+        else if (isTRUE(!is.na(id[j]) && ans_type[j] == "NUMBER")) {
           if (!is.na(data[[1]]$events$answer$correct[j]) && data[[1]]$events$answer$correct[j] == "TRUE") {
             ans <- append(ans, paste("Correct", data[[1]]$events$answer$numberInput[j])) #add the validated answer in the answer column
           }
@@ -5792,8 +5857,8 @@ server <- function(input, output, session) {
     # Distance to the correct answer
     dist <- list()
     
-    for (j in 1:(length(id) - 1)) {
-      if ((!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
+    for (j in seq_len(max(length(id) - 1L, 0L))) {
+      if (isTRUE(!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
         dist <- append(dist, format_task_error(data[[1]]$events, j))
       }
     }
@@ -5812,8 +5877,8 @@ server <- function(input, output, session) {
     tps <- data[[1]]$events$timestamp
     time1 <- as.POSIXct(tps[1], format = "%Y-%m-%dT%H:%M:%OS",tz = "UTC")
     tmp <- list()
-    for (j in 1:(length(id) - 1)) {
-      if ((!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
+    for (j in seq_len(max(length(id) - 1L, 0L))) {
+      if (isTRUE(!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
         time2 <- as.POSIXct(tps[j], format = "%Y-%m-%dT%H:%M:%OS",tz = "UTC")
         tmp <- append(tmp, paste(floor(as.numeric(time2 - time1, units = "secs")),"s"))
         time1 <- as.POSIXct(tps[j+1], format = "%Y-%m-%dT%H:%M:%OS",tz = "UTC")
@@ -5824,11 +5889,11 @@ server <- function(input, output, session) {
     #Computing tries number for each task
     tries = 0
     try <- list()
-    for (j in 1:(length(id) - 1)) {
+    for (j in seq_len(max(length(id) - 1L, 0L))) {
       if (ev[j] == "ON_OK_CLICKED") { #Answer when the player clicks on OK
         tries <- tries + 1
       }
-      if ((!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
+      if (isTRUE(!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
         try <- append(try, tries)
         tries = 0
       }
@@ -5884,12 +5949,15 @@ server <- function(input, output, session) {
     
     
     #Recovering answers position for the map
-    for (i in 1:(length(id)-1)) {
+    for (i in seq_len(max(length(id) - 1L, 0L))) {
       if (!is.na(cat_task[i])) {
         if ((cat_task[i] == "nav") && (cou == num_value_num())) {
-          long <- append(long, coor[[i]][1])
-          lati <- append(lati, coor[[i]][2])
-          accuracy_rad <- accuracy_radius[[i]]
+          xy <- coordinate_pair_at(coor, i)
+          if (!is.null(xy)) {
+            long <- append(long, xy[1])
+            lati <- append(lati, xy[2])
+          }
+          accuracy_rad <- get_task_accuracy(data[[1]]$events, i, kind = "nav")
           t <- type_task[i]
         }
         if ((cat_task[i] == "info") && (cou == num_value_num())) {
@@ -5899,11 +5967,17 @@ server <- function(input, output, session) {
       }
       if (!is.na(type_task[i])) { #target point for theme task
         if ((type_task[i] == "theme-loc") && (ev[i] == "ON_OK_CLICKED") && (cou == num_value_num())) {
-          lng_targ <- append(lng_targ, targ[[i]][1])
-          lat_targ <- append(lat_targ, targ[[i]][2])
-          lng_true <- append(lng_true, coor_true$longitude[[i]])
-          lat_true <- append(lat_true, coor_true$latitude[[i]])
-          accuracy_rad <- accuracy_radius[[i]]
+          xy <- get_click_lonlat(data[[1]]$events, i)
+          if (all(is.finite(xy))) {
+            lng_targ <- append(lng_targ, xy[1])
+            lat_targ <- append(lat_targ, xy[2])
+          }
+          xy <- c(coor_true$longitude[i], coor_true$latitude[i])
+          if (all(is.finite(xy))) {
+            lng_true <- append(lng_true, xy[1])
+            lat_true <- append(lat_true, xy[2])
+          }
+          accuracy_rad <- get_task_accuracy(data[[1]]$events, i, kind = "nav")
           t <- type_task[i]
         }
         if ((type_task[i] == "theme-loc") && (cou == num_value_num())) { #Always having the task type shown for theme-localisation
@@ -5997,16 +6071,16 @@ server <- function(input, output, session) {
             }
           }
         }
-        if ((type_task[i] == "free") && (cou == num_value_num()) && length(drawing_point_lat) != 0 && !is.na(drawing_point_lat[[i]]) && ans_type[[i]] == "DRAW") {
+        if ((type_task[i] == "free") && (cou == num_value_num()) && length(drawing_point_lat) != 0 && !is.na(drawing_point_lat[[i]]) && isTRUE(ans_type[[i]] == "DRAW")) {
           dr_point_lat <- append(dr_point_lat, drawing_point_lat[[i]])
           dr_point_lng <- append(dr_point_lng, drawing_point_lng[[i]])
           t <- type_task[i]
         }
-        if ((type_task[i] == "free") && (cou == num_value_num()) && (length(drawing_point_lat) == 0 || is.na(drawing_point_lat[[i]])) && ans_type[[i]] == "DRAW") { #correcting error to visualize draw
+        if ((type_task[i] == "free") && (cou == num_value_num()) && (length(drawing_point_lat) == 0 || is.na(drawing_point_lat[[i]])) && isTRUE(ans_type[[i]] == "DRAW")) { #correcting error to visualize draw
           mr <- TRUE
           t <- type_task[i]
         }
-        if ((type_task[i] == "free") && (cou == num_value_num()) && ans_type[[i]] != "DRAW") {
+        if ((type_task[i] == "free") && (cou == num_value_num()) && !isTRUE(ans_type[[i]] == "DRAW")) {
           mr <- TRUE
           t <- type_task[i]
         }
@@ -6014,7 +6088,7 @@ server <- function(input, output, session) {
       if (is.na(type_task[i]) && (i != 1) && (cou == num_value_num())) { #na task
         mr <- TRUE
       }
-      if ((!is.na(id[i]) && (i != 1) && (id[i] != id[i + 1])) || i == (length(id) - 1)) {
+      if (isTRUE(!is.na(id[i]) && (i != 1) && (id[i] != id[i + 1])) || i == (length(id) - 1)) {
         cou <- cou + 1
       }
     }
@@ -6024,8 +6098,10 @@ server <- function(input, output, session) {
     traj_lat <- list()
     accuracy <- list()
     task_number <- data[[1]]$waypoints$taskNo #Task number
-    for (i in 1:length(task_number)) {
-      if (task_number[i] == num_value_num()) {
+    for (i in seq_along(task_number)) {
+      if (isTRUE(task_number[i] == num_value_num()) &&
+            all(is.finite(c(data[[1]]$waypoints$position$coords$longitude[i],
+                            data[[1]]$waypoints$position$coords$latitude[i])))) {
         traj_lng <- append(traj_lng, data[[1]]$waypoints$position$coords$longitude[i])
         traj_lat <- append(traj_lat, data[[1]]$waypoints$position$coords$latitude[i])
         if (length(data[[1]]$waypoints$position$coords$accuracy) != 0) {
@@ -6049,10 +6125,10 @@ server <- function(input, output, session) {
     time_waypoints <- list()
     tps_waypoints <- data[[1]]$waypoints$timestamp
     
-    for (k in 1:length(tmp)) {
+    for (k in seq_along(tmp)) {
       if (tmp[[k]] == "0 s") {
-        for (i in 1:length(task_number)) {
-          if (task_number[i] == k) {
+        for (i in seq_along(task_number)) {
+          if (isTRUE(task_number[i] == k)) {
             time_waypoints <- append(time_waypoints, tps_waypoints[[i]])
           }
         }
@@ -6082,7 +6158,7 @@ server <- function(input, output, session) {
           lat_2 <- traj_lat[[k+1]][1]
           lng_2 <- traj_lng[[k+1]][1]
           d <- R * acos(sin(lat_1*deg_to_rad)*sin(lat_2*deg_to_rad) + cos(lat_1*deg_to_rad)*cos(lat_2*deg_to_rad)*cos((lng_2 - lng_1)*deg_to_rad))
-          if (accuracy[[k]] >= 20) {
+          if (isTRUE(accuracy[[k]] >= 20)) {
             traj_lat[k] <- traj_lat[k+1] #Filter GPS coordinate errors
             traj_lng[k] <- traj_lng[k+1]
           }
@@ -6093,7 +6169,7 @@ server <- function(input, output, session) {
     rg <- cbind(unlist(typ), unlist(cons), unlist(ans), unlist(tmp), unlist(try), unlist(dist))
     #print(rg)
     
-    for (i in 1:(nrow(rg))) {
+    for (i in seq_len(NROW(rg))) {
       if (((!is.na(rg[i,1]) && rg[i,1] == "nav-arrow") || (!is.na(rg[i,1]) && rg[i,1] == "nav-text")
            || (!is.na(rg[i,1]) && rg[i,1] == "nav-photo")) && rg[i,4] != "0 s" && is.na(rg[i,3])) {
         rg[i,3] <- "Correct"
@@ -6188,7 +6264,7 @@ server <- function(input, output, session) {
       
       n <- nrow(df)
       cur <- suppressWarnings(as.integer(input$num_value))
-      if (is.na(cur) || cur < 1 || cur > n) cur <- 1
+      if (length(cur) != 1 || is.na(cur) || cur < 1 || cur > n) cur <- 1
       
       update_main_task_pickers(
         session = session,
@@ -6906,8 +6982,8 @@ server <- function(input, output, session) {
     pict <- list()
     ans_photo <- list()
     
-    for (i in 1:(length(id) - 1)) {
-      if ((!is.na(id[i]) && (i != 1) && (id[i] != id[i + 1])) || i == (length(id) - 1)) {
+    for (i in seq_len(max(length(id) - 1L, 0L))) {
+      if (isTRUE(!is.na(id[i]) && (i != 1) && (id[i] != id[i + 1])) || i == (length(id) - 1)) {
         cou <- cou + 1
         
         pict <- append(pict, safe_photo_at(data[[1]]$events$task$question$photo, i))
@@ -7606,6 +7682,45 @@ server <- function(input, output, session) {
   #   they open it — getUserGames now includes games where sharedWith contains
   #   the authenticated user's email.
 
+  # Bind each modal's recipient list to the item whose sharing data was fetched.
+  game_share_target_rv <- reactiveVal(NULL)
+  event_share_target_rv <- reactiveVal(NULL)
+  track_share_target_rv <- reactiveVal(NULL)
+  current_share_track <- function() {
+    if (length(input$selected_files) == 1) input$selected_files[1] else NULL
+  }
+
+  observe_share_removals <- function(emails_rv, target_rv, current_target, prefix, endpoint) {
+    handlers <- list()
+    observe({
+      emails <- emails_rv()
+      target <- target_rv()
+      selected <- current_target()
+      lapply(handlers, function(handler) handler$destroy())
+      handlers <<- list()
+      if (is.null(target) || !identical(target, selected)) return()
+
+      for (i in seq_along(emails)) local({
+        email <- emails[i]
+        target_id <- target
+        btn_id <- paste0(prefix, i)
+        handlers[[btn_id]] <<- observeEvent(input[[btn_id]], {
+          req(identical(target_rv(), target_id), identical(current_target(), target_id),
+              email %in% emails_rv(), accessToken_rv(), apiURL_rv())
+          url <- paste0(apiURL_rv(), endpoint, target_id, "/share")
+          result <- api_request(url, accessToken_rv(),
+                                body = list(emails = list(email)), method = "DELETE")
+          if (result$status == 200) {
+            emails_rv(result$data$sharedWith)
+            showNotification(paste0("Removed ", email), type = "message")
+          } else {
+            showNotification("Could not remove user. Please try again.", type = "error")
+          }
+        }, ignoreInit = TRUE)
+      })
+    })
+  }
+
   # Reactive value holding the current shared-with emails for the selected game.
   shared_emails_rv <- reactiveVal(character(0))
 
@@ -7627,6 +7742,7 @@ server <- function(input, output, session) {
 
     # Fetch who this game is already shared with.
     game_id <- input$selected_games
+    game_share_target_rv(game_id)
     url <- paste0(apiURL_rv(), "/game/", game_id, "/share")
     result <- api_get(url, accessToken_rv())
 
@@ -7693,6 +7809,7 @@ server <- function(input, output, session) {
   # update the reactive list, and clear the input.
   observeEvent(input$share_add_btn, {
     req(input$selected_games, accessToken_rv(), apiURL_rv())
+    req(identical(game_share_target_rv(), input$selected_games))
 
     email <- trimws(tolower(input$share_email_input))
     if (!grepl("@", email)) {
@@ -7740,32 +7857,8 @@ server <- function(input, output, session) {
     }
   })
 
-  # Dynamically observe the per-email "X" remove buttons.
-  # Each button's ID is "remove_share_N" where N is the position in the list.
-  # once = TRUE prevents duplicate observer registration on re-render.
-  observe({
-    emails <- shared_emails_rv()
-    lapply(seq_along(emails), function(i) {
-      btn_id <- paste0("remove_share_", i)
-      observeEvent(input[[btn_id]], {
-        req(input$selected_games, accessToken_rv(), apiURL_rv())
-
-        email_to_remove <- emails[i]
-        game_id <- input$selected_games
-        url <- paste0(apiURL_rv(), "/game/", game_id, "/share")
-        result <- api_request(url, accessToken_rv(),
-                              body = list(emails = list(email_to_remove)),
-                              method = "DELETE")
-
-        if (result$status == 200) {
-          shared_emails_rv(result$data$sharedWith)
-          showNotification(paste0("Removed ", email_to_remove), type = "message")
-        } else {
-          showNotification("Could not remove user.", type = "error")
-        }
-      }, ignoreInit = TRUE, once = TRUE)
-    })
-  })
+  observe_share_removals(shared_emails_rv, game_share_target_rv,
+                         function() input$selected_games, "remove_share_", "/game/")
 
 
   # ── Share an event ──────────────────────────────────────────────────
@@ -7789,6 +7882,7 @@ server <- function(input, output, session) {
     req(event_is_active(), accessToken_rv(), apiURL_rv())
 
     event_id <- input$selected_event
+    event_share_target_rv(event_id)
     url <- paste0(apiURL_rv(), "/event/", event_id, "/share")
     result <- api_get(url, accessToken_rv())
 
@@ -7846,6 +7940,7 @@ server <- function(input, output, session) {
   # Add an email to the event's sharedWith.
   observeEvent(input$share_event_add_btn, {
     req(event_is_active(), accessToken_rv(), apiURL_rv())
+    req(identical(event_share_target_rv(), input$selected_event))
 
     email <- trimws(tolower(input$share_event_email_input))
     if (!grepl("@", email)) {
@@ -7871,30 +7966,8 @@ server <- function(input, output, session) {
     }
   })
 
-  # Per-email "X" revoke buttons: DELETE /event/:id/share.
-  observe({
-    emails <- event_shared_emails_rv()
-    lapply(seq_along(emails), function(i) {
-      btn_id <- paste0("remove_event_share_", i)
-      observeEvent(input[[btn_id]], {
-        req(event_is_active(), accessToken_rv(), apiURL_rv())
-
-        email_to_remove <- emails[i]
-        event_id <- input$selected_event
-        url <- paste0(apiURL_rv(), "/event/", event_id, "/share")
-        result <- api_request(url, accessToken_rv(),
-                              body = list(emails = list(email_to_remove)),
-                              method = "DELETE")
-
-        if (result$status == 200) {
-          event_shared_emails_rv(result$data$sharedWith)
-          showNotification(paste0("Removed ", email_to_remove), type = "message")
-        } else {
-          showNotification("Could not remove user.", type = "error")
-        }
-      }, ignoreInit = TRUE, once = TRUE)
-    })
-  })
+  observe_share_removals(event_shared_emails_rv, event_share_target_rv,
+                         function() input$selected_event, "remove_event_share_", "/event/")
 
 
   # ── Share a single track ───────────────────────────────────────────
@@ -7925,8 +7998,10 @@ server <- function(input, output, session) {
   # Open the modal: fetch who this track is already shared with.
   observeEvent(input$open_share_track_modal, {
     req(input$selected_files, accessToken_rv(), apiURL_rv())
+    req(current_share_track())
 
     track_id <- input$selected_files[1]
+    track_share_target_rv(track_id)
     url <- paste0(apiURL_rv(), "/track/", track_id, "/share")
     result <- api_get(url, accessToken_rv())
 
@@ -7989,6 +8064,7 @@ server <- function(input, output, session) {
   # Handle the "Share" button click: validate email, POST to server.
   observeEvent(input$share_track_add_btn, {
     req(input$selected_files, accessToken_rv(), apiURL_rv())
+    req(current_share_track(), identical(track_share_target_rv(), current_share_track()))
 
     email <- trimws(tolower(input$share_track_email_input))
     if (!grepl("@", email)) {
@@ -8018,31 +8094,8 @@ server <- function(input, output, session) {
     }
   })
 
-  # Per-email "X" revoke buttons: DELETE /track/:id/share.
-  observe({
-    emails <- track_shared_emails_rv()
-    lapply(seq_along(emails), function(i) {
-      btn_id <- paste0("remove_track_share_", i)
-      observeEvent(input[[btn_id]], {
-        req(input$selected_files, accessToken_rv(), apiURL_rv())
-
-        email_to_remove <- emails[i]
-        track_id <- input$selected_files[1]
-        url <- paste0(apiURL_rv(), "/track/", track_id, "/share")
-        result <- api_request(url, accessToken_rv(),
-                              body = list(emails = list(email_to_remove)),
-                              method = "DELETE")
-
-        if (result$status == 200) {
-          track_shared_emails_rv(result$data$sharedWith)
-          showNotification(paste0("Removed ", email_to_remove), type = "message")
-        } else {
-          showNotification("Could not remove user.", type = "error")
-        }
-      }, ignoreInit = TRUE, once = TRUE)
-    })
-  })
-
+  observe_share_removals(track_shared_emails_rv, track_share_target_rv,
+                         current_share_track, "remove_track_share_", "/track/")
 
 }
 
