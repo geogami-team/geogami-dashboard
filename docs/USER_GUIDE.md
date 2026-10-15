@@ -13,12 +13,18 @@
 
 ## 🗺️ Layout at a glance
 
-When you open the dashboard you see two areas:
+The dashboard has an action header, a selection sidebar and an analysis area:
 
 | Area | What lives there |
 |---|---|
-| **Sidebar** (left) | Theme, game picker, player picker, share controls |
-| **Main panel** (right) | Five tabs for analysis & comparison |
+| **Header** | Import JSON, Share and Export data |
+| **Sidebar** (left) | Event, game, selected sessions, reference session and appearance |
+| **Main panel** (right) | Session summary cards and five analysis tabs |
+
+The summary cards show the **complete reference session**, even when the table
+is filtered. Score includes viewed information tasks. Session time runs from the
+first to the last recorded event; distance uses the recorded route with GPS
+quality filtering. Missing recordings display **Not recorded**.
 
 ---
 
@@ -28,7 +34,9 @@ When you open the dashboard you see two areas:
 Switch between **Light** and **Dark**.
 
 ### 2. Upload JSON file *(optional)*
-Use this to inspect a single track JSON file directly from disk, without going through the API. Useful for offline analysis or debugging.
+Choose **Import JSON** in the header, or browse for a file in the sidebar, to
+inspect one track directly from disk. Importing switches the dashboard to that
+session. Choose **Back to account data** to return to your account selection.
 
 ### 3. Select your game
 *Visible when the dashboard is opened with a `?token=` from the GeoGami front-end.*
@@ -37,7 +45,7 @@ Use this to inspect a single track JSON file directly from disk, without going t
 - Pick one to load its tracks into the dashboard.
 
 ### 4. Share game tracks
-*Button appears once a game is selected.*
+*Available under **Share** in the header once a game is selected.*
 
 - Opens a dialog where you can grant or revoke access to this game's tracks for other GeoGami users by email.
 - Add one or more addresses; the server validates each — it rejects the owner's own email and addresses that don't belong to a registered GeoGami account.
@@ -45,16 +53,24 @@ Use this to inspect a single track JSON file directly from disk, without going t
 - Backing endpoints: `POST /game/:id/share`, `DELETE /game/:id/share`, `GET /game/:id/share`.
 
 ### 5. Select the players
-After picking a game, this dropdown lists every track session (one per player run).
+After picking a game, **Player sessions** lists each recorded run with a bold
+player name and a smaller date/time underneath. Search the list by player name
+or date, or use **Select all** / **Clear**.
 
 - Choose one or more sessions to load their data into the main-panel tabs.
 - Until you load at least one session, the right-hand tabs stay empty.
-- **Download** button: exports the selected JSON track files as a zip. The structure of these files is documented field by field in the [Track Data Reference](https://github.com/geogami-team/geogami-docs/blob/HEAD/docs/TRACK_DATA_REFERENCE.md).
+- Use the checkboxes to select sessions for comparison and export. Click a player
+  name to inspect that session; the highlighted row shows **Viewing**. Clicking
+  an unselected name also selects its session. Comparison task numbers follow
+  the session being viewed.
+- **Export data → Selected sessions JSON** downloads one session as JSON or
+  several as a ZIP. The format is documented in the [Track Data Reference](https://github.com/geogami-team/geogami-docs/blob/HEAD/docs/TRACK_DATA_REFERENCE.md).
 
-> ℹ️ **Note about task numbers:** unlike older versions, there is no longer a single "task number" field in the sidebar. Each tab that needs a task selection has its own **Selected Tasks** picker at the top, so you can compare different tasks across tabs without losing your place.
+Task selection is synchronized across Map, Pictures, Compare Players and
+Statistics. Selecting a row in All tasks selects that same task for these tabs.
 
 ### 6. Share a single track
-*Button appears once **exactly one** track is selected in **Select the players**.*
+*Available under **Share** once **exactly one** account session is selected.*
 
 - Opens a dialog to grant or revoke access to **that one track** for other GeoGami users by email — independent of the whole game.
 - Same validation as game sharing: the server rejects the track owner's own email and addresses with no GeoGami account.
@@ -69,36 +85,45 @@ After picking a game, this dropdown lists every track session (one per player ru
 The main panel has five tabs. The first three analyse loaded sessions individually; the last two compare across sessions.
 
 ### 1. All tasks
-- **Selected Tasks** picker — narrow the table to one task, or leave it on the default to see every task.
-- **File selector** — pick which loaded session to inspect.
-- Shows a player-info box (overall score, summary stats) followed by the **Big table** with full per-task details.
-- **Save all to csv** under the table exports the full per-player data.
+- **Tasks** and **Task type** narrow the table. An empty Tasks selection shows all tasks.
+- Search task text, sort columns and use **Columns** to choose visible table fields.
+- Result badges distinguish correct, incorrect, viewed and unfinished tasks.
+- Select a row to view its full assignment, timing, attempts, error and map preview.
+  Rows can also be selected with Enter or Space when focused.
+- **Open full map** opens the selected task in Map.
+- **Export data → Reference session CSV** exports the current task/type filters
+  with full assignment text. **Selected sessions CSV** exports these filters for
+  all sessions selected in the sidebar. Table search, sorting and column visibility
+  affect the table presentation; CSV retains its analysis columns.
 
 ### 2. Map
-- **Selected Tasks** picker + **file selector** at the top.
+- **Task** picker and trajectory-session selector at the top.
 - Shows the player's trajectory and answer locations on a Leaflet map for the chosen task.
 - Map legend updates based on the task type (navigation, direction, etc.).
-- **Save the map** downloads the current view as an HTML file.
+- **Visualize Trajectories** plays the selected recorded routes. Pause/resume,
+  seek through the playback and choose its speed using the playback controls.
+- **Export map** downloads the map package with the selected trajectories.
 
 ### 3. Pictures
-- **Selected Tasks** picker + **file selector** at the top.
+- **Task** picker at the top; the reference session comes from the sidebar.
 - For picture-based tasks, displays the photo the player took, plus the assignment image where applicable.
 - Each image has its own **Download** button.
 - Tasks that don't produce a photo are greyed out in the task picker.
 
 ### 4. Compare Players
-- **Selected Tasks** picker + multi-select **file selector** to choose the sessions you want to compare.
+- **Task** picker and a shared comparison-session selector to choose sessions.
 - Displays a comparison table that adapts to the task type:
   - Navigation tasks → **Route length versus time**
   - Direction-determination tasks → **Answer and error for direction task**
-- **Save to csv** exports the comparison table.
+- **Export comparison CSV** exports the comparison table.
 
 ### 5. Statistics
-- **Selected Tasks** picker + multi-select **file selector**.
-- **Choose graphic to display** — switches between available chart types for the selected task type:
-  - Navigation: **Time VS Distance** (scatter) or **Answer & Error** (pie chart)
-  - Direction / Free / Self-location / Object-location: **Answer & Error** plot
-- **Save to png** under each chart exports the visualization.
+- **Task** picker and the same comparison-session selection as Compare Players.
+- Displays an answer/error donut chart, plus a time/distance scatter plot for
+  navigation tasks. Charts adapt to the chosen appearance.
+- **Export chart PNG** saves the visualization.
+- Imported JSON contains one session, so group comparison and statistics require
+  account sessions.
 
 ---
 

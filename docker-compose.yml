@@ -12,4 +12,5 @@ services:
       - "3838:3838"
     volumes:
       - ./app.R:/srv/shiny-server/app.R  # host:container
+      - ./www:/srv/shiny-server/www:ro  # dashboard styles, scripts and virtual maps
     container_name: shiny-app

@@ -66,12 +66,17 @@ The GeoGami Dashboard is an **R Shiny** application used by game creators, schol
 docker compose up -d        # Shiny on http://localhost:3838
 ```
 
-`docker-compose.yml` mounts `app.R` from the host so iterative changes don't require a rebuild. To force a fresh build:
+`docker-compose.yml` mounts `app.R` and `www/` from the host so local code,
+styles, scripts and virtual-map assets stay in sync. The default service uses
+the published image; update it with:
 
 ```bash
-docker compose build --no-cache
-docker compose up
+docker compose pull
+docker compose up -d --force-recreate
 ```
+
+To build locally, enable the `build` block in the compose file and run
+`docker compose up -d --build`.
 
 ## Local development without Docker
 
@@ -105,6 +110,27 @@ Change this when running against a local server during development.
 
 ## User guide
 
+The interface has a compact action header, searchable event/game/session
+selectors, a shared reference session, light/dark themes and responsive panels.
+The All tasks table supports sorting, task/type filters, search, column
+visibility and a task preview with a Leaflet map. Map, Pictures, Compare Players
+and Statistics use the same reference session and synchronized task selection.
+
+The summary cards always describe the complete reference session, regardless
+of table filters or the active tab:
+
+- **Tasks recorded:** the number of `INIT_TASK` blocks, including repeated tasks.
+- **Score:** canonical correct-task count; information tasks count as correct
+  and appear as **Viewed** in the interface.
+- **Session time:** elapsed time between the first and last recorded event,
+  including time between tasks. A lone or missing timestamp shows **Not recorded**.
+- **Distance:** the full recorded waypoint route using the existing GPS
+  accuracy and speed filters. Missing usable coordinates show **Not recorded**.
+
+Importing JSON switches the active analysis source to the imported session.
+Authenticated users can choose **Back to account data** to restore their account
+selection. Sharing and account exports apply only to account data.
+
 End-user walkthrough of the sidebar and the five main-panel tabs (All tasks, Map, Pictures, Compare Players, Statistics) — including the **share game tracks** flow and the per-track **"Share this track"** button (shown when a single track is selected) — lives in [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
 
 Analyzing the exported track JSON files yourself (R, Python, …)? The complete field-by-field format documentation is the [Track Data Reference](https://github.com/geogami-team/geogami-docs/blob/HEAD/docs/TRACK_DATA_REFERENCE.md) in `geogami-docs`.
@@ -114,13 +140,21 @@ Analyzing the exported track JSON files yourself (R, Python, …)? The complete 
 ```
 .
 ├── app.R                  # Single-file Shiny app (UI + server)
-├── www/                   # Static assets served by Shiny
+├── www/                   # dashboard.css, dashboard.js and virtual-map assets
 ├── shiny-server.conf      # Configuration for the bundled shiny-server
 ├── Dockerfile             # rocker/shiny image with required system + R packages
 └── docker-compose.yml     # Local stack
 ```
 
 `app.R` is intentionally a single file to keep the deployment surface small. Helpers for HTTP calls (`fetch_games_data_from_server`, `api_request`, `api_get`) sit at the top, followed by the UI definition (`page_sidebar(...)`) and a `server <- function(input, output, session)` block.
+
+Run the regression checks from this directory with `Rscript tests/regression.R`.
+They exercise Shiny sessions with synthetic tracks and mocked API requests,
+including incomplete tracks, missing GPS data, standalone uploads, API failures,
+sharing changes, session metrics, stable task selection and source switching.
+They do not contact the live API or modify production data.
+Check the client script with `node --check www/dashboard.js` and run the
+playback checks with `node tests/dashboard-client.test.js`.
 
 ## Deployment
 
@@ -129,6 +163,12 @@ The project deploys cleanly to anything that can run a Docker container with por
 - Put a TLS-terminating reverse proxy in front (Caddy, nginx, Traefik).
 - Pass through `?token=` query parameters untouched.
 - Run alongside the GeoGami server so both share the same domain root (cookies aren't used; CORS is not an issue for token-based auth).
+
+Deploy `app.R` together with `www/dashboard.css`, `www/dashboard.js` and the
+existing virtual-map assets. The Dockerfile copies all of them. With the supplied
+compose mounts, update the host checkout and recreate the container; pulling a
+new image alone cannot replace the mounted files. No API or database migration
+is required for the dashboard redesign.
 
 ## License
 

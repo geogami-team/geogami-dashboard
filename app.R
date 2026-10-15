@@ -89,31 +89,47 @@ add_drawing_features <- function(map, feats) {
 }
 
 # Function to fetch/load list of user games / games that user has access to their tracks
-fetch_games_data_from_server <- function(url, token) {
-  message("Fetched data, now processing...")
-  # Adds a space between 'Bearer' and the token
-  auth_header <- paste("Bearer", token)  
-  
-  # Make the request with Authorization header
-  res <- GET(url, add_headers(Authorization = auth_header))
-  
-  # Handle the response
-  if (status_code(res) == 200) {
-    data <- fromJSON(content(res, "text", encoding = "UTF-8"))
-    if (length(data) == 0) {
-      return(NULL)  # No content found
-    }
-    # return the content of the response
-    message("Finished fetching data... m")
-    return(data$content)
+fetch_games_data_from_server <- function(url, token, request = httr::VERB) {
+  result <- api_get(url, token, request = request)
+  if (result$status == 200) return(result$data$content)
+
+  msg <- if (result$status == 401) {
+    "Your session has expired. Please reopen the dashboard from GeoGami."
+  } else if (result$status == 403) {
+    "You do not have access to this data."
   } else {
-    if (status_code(res) == 401) {
-      warning("Unauthorized: Invalid or expired token.")
-    } else {
-      warning(paste("Failed to fetch games. Status code:", status_code(res)))
-    }
-    return(NULL)
+    "Could not load data from GeoGami. Please try again."
   }
+  message(msg)
+  if (!is.null(shiny::getDefaultReactiveDomain())) {
+    shiny::showNotification(msg, type = "error", id = "dashboard_api_error")
+  }
+  NULL
+}
+
+# Keep transport and response errors out of Shiny observers. Never retry mutations.
+api_call <- function(url, token, body = NULL, method = "GET", request = httr::VERB) {
+  tryCatch({
+    args <- list(method, url, httr::add_headers(Authorization = paste("Bearer", token)),
+                 httr::timeout(30))
+    if (method != "GET") {
+      args <- c(args, list(httr::content_type_json(), body = body, encode = "json"))
+    }
+    res <- do.call(request, args)
+    status <- httr::status_code(res)
+    data <- tryCatch(
+      jsonlite::fromJSON(httr::content(res, as = "text", encoding = "UTF-8")),
+      error = function(e) NULL
+    )
+    if (is.null(data) || !is.list(data)) {
+      return(list(status = if (status >= 200 && status < 300) 502L else status,
+                  data = list(message = "GeoGami returned an invalid response. Please try again.")))
+    }
+    list(status = status, data = data)
+  }, error = function(e) {
+    list(status = 0L,
+         data = list(message = "Could not reach GeoGami. Please try again."))
+  })
 }
 
 # ── API helpers for share/unshare feature ────────────────────────────
@@ -123,36 +139,14 @@ fetch_games_data_from_server <- function(url, token) {
 
 # POST or DELETE JSON to an API endpoint.
 # Used by the share modal to add/remove emails from game.sharedWith.
-api_request <- function(url, token, body = list(), method = "POST") {
-  auth_header <- paste("Bearer", token)
-  if (method == "DELETE") {
-    res <- httr::DELETE(url, add_headers(Authorization = auth_header),
-                        body = body, encode = "json",
-                        content_type_json())
-  } else {
-    res <- httr::POST(url, add_headers(Authorization = auth_header),
-                      body = body, encode = "json",
-                      content_type_json())
-  }
-  # Return status + parsed body so callers can check for errors and
-  # update the UI with the server's response (e.g. updated sharedWith list).
-  list(
-    status = status_code(res),
-    data = tryCatch(fromJSON(content(res, "text", encoding = "UTF-8")),
-                    error = function(e) list())
-  )
+api_request <- function(url, token, body = list(), method = "POST", request = httr::VERB) {
+  api_call(url, token, body, method, request)
 }
 
 # GET JSON from an API endpoint, returning status + body.
 # Used to fetch the current sharedWith list when the modal opens.
-api_get <- function(url, token) {
-  auth_header <- paste("Bearer", token)
-  res <- httr::GET(url, add_headers(Authorization = auth_header))
-  list(
-    status = status_code(res),
-    data = tryCatch(fromJSON(content(res, "text", encoding = "UTF-8")),
-                    error = function(e) list())
-  )
+api_get <- function(url, token, request = httr::VERB) {
+  api_call(url, token, request = request)
 }
 
 # commited out as there was an issue that it works fine locally but not on the server
@@ -169,779 +163,200 @@ api_get <- function(url, token) {
 #   format(Sys.time(), "%d.%m.%y %H:%M:%S")
 # })
 
+dashboard_theme <- function(dark = FALSE) {
+  bs_theme(version = 5, bg = if (dark) "#101a22" else "#f3f6f8",
+           fg = if (dark) "#e8f0f4" else "#142630",
+           primary = if (dark) "#6bd0d0" else "#006f77",
+           base_font = "system-ui", `border-radius` = "0.5rem")
+}
+
 ui <- page_sidebar(
-  title = div(
-    style = "display: flex; align-items: center; gap: 20px;",
-    tags$img(src = "https://geogami.ifgi.de/wp-content/uploads/2020/03/Unbenannt-7.png", height = "60px"),
-    tags$div(
-      tags$h1("Welcome to the dashboard!", style = "margin: 0; font-size: 24px;"),
-      tags$a("app.geogami.uni-muenster.de", href = "https://app.geogami.uni-muenster.de/", style = "font-size: 14px; color: white;")
+  window_title = "GeoGami Analytics",
+  fillable = FALSE,
+  theme = dashboard_theme(),
+  title = div(class = "geo-topbar",
+    div(class = "geo-brand",
+      tags$span(class = "geo-brand-mark", icon("map-location-dot")),
+      tags$span("GeoGami", class = "geo-brand-name"),
+      tags$span("Analytics", class = "geo-brand-note")
+    ),
+    div(class = "geo-header-actions",
+      tags$button(id = "dashboard_import", type = "button", class = "btn geo-header-button",
+                  icon("file-import"), "Import JSON"),
+      conditionalPanel("output.dashboard_authenticated === 'TRUE' && output.dashboard_is_upload !== 'TRUE'",
+        tags$details(class = "geo-menu",
+          tags$summary(icon("share-nodes"), "Share", icon("angle-down")),
+          div(class = "geo-menu-panel", uiOutput("share_event_button_ui"),
+              uiOutput("share_button_ui"), uiOutput("share_track_button_ui"))
+        )
+      ),
+      tags$details(class = "geo-menu",
+        tags$summary(icon("download"), "Export data", icon("angle-down")),
+        div(class = "geo-menu-panel",
+          conditionalPanel("output.dashboard_has_track === 'TRUE'", downloadButton("save_data", "Reference session CSV")),
+          conditionalPanel("output.dashboard_authenticated === 'TRUE' && output.dashboard_is_upload !== 'TRUE' && output.dashboard_has_track === 'TRUE'",
+            downloadButton("save_all_data", "Selected sessions CSV"),
+            downloadButton("download_json", "Selected sessions JSON")
+          ),
+          conditionalPanel("output.dashboard_has_track !== 'TRUE'", p("Select a session or import JSON to export data.", class = "geo-muted"))
+        )
+      )
     )
   ),
-  
-  tags$head(
-    tags$style(HTML("
-    #selected_multiple_files-label + div div > .items {
-      width: 80vw;
-    }
-    @media only screen and (min-width: 575px) {
-      #selected_multiple_files-label + div div > .items {
-        width: 20vw;
-      }
-    }
-    @media only screen and (min-width: 750px) {
-      #selected_multiple_files-label + div div > .items {
-        width: 40vw;
-      }
-    }
-    @media only screen and (min-width: 1100px) {
-      #selected_multiple_files-label + div div > .items {
-        width: 60vw;
-      }
-    }
-    #selected_multiple_files-label + div div > .items {
-      display: flex;
-      flex-flow: row wrap;
-      justify-content: flex-start;
-      gap: 5px;
-    }
-    .item {
-      word-wrap: anywhere;
-    }
-    /* RW / VE badges in the games picker + legend. Styled via a class (not
-       inline style) because bootstrap-select's HTML sanitizer keeps class=
-       but strips style=. */
-    .geo-badge {
-      display: inline-block;
-      width: 26px;
-      height: 16px;
-      line-height: 16px;
-      text-align: center;
-      padding: 0;
-      box-sizing: border-box;
-      border-radius: 3px;
-      font-size: 9px;
-      font-weight: 600;
-      color: #fff !important;
-      margin-right: 6px;
-      vertical-align: middle;
-    }
-    .geo-badge-ve { background: #6f42c1 !important; }
-    .geo-badge-rw { background: #198754 !important; }
-    pre {
-      background-color: #F0F0F0 !important;
-      color: #333 !important;
-    }
-   
-    .bslib-page-sidebar .navbar {
-      background: linear-gradient(90deg, rgb(7, 48, 59) 20%, #0CD1E8 100%);
-      min-height: 80px;
-      padding-top: 10px;
-      padding-bottom: 10px;
-      padding-left: 20px;
-    }
-
-    .bslib-page-sidebar .navbar-brand {
-      display: flex;
-      align-items: center;
-      gap: 15px;
-    }
-
-    .bslib-page-sidebar h1 {
-      margin: 0;
-      font-size: 25px;
-      color: white;
-    }
-
-    .bslib-page-sidebar a {
-      color: black;
-    }
-    
-    #inlineDiv {
-      display: inline-block;
-    }
-
-    /* Default (desktop) sidebar: fixed width */
-    .bslib-page-sidebar .sidebar {
-      flex: 0 0 300px !important;
-      max-width: 300px !important;
-    }
-
-    /* On tablets (portrait, e.g. iPad ≤ 1024px), sidebar smaller */
-    @media (max-width: 1024px) {
-      .bslib-page-sidebar .sidebar {
-        flex: 0 0 220px !important;
-        max-width: 220px !important;
-      }
-    }
-
-    /* On very small screens (phones ≤ 768px), sidebar takes full width (collapses on top) */
-    @media (max-width: 768px) {
-      .bslib-page-sidebar .sidebar {
-        flex: 0 0 100% !important;
-        max-width: 100% !important;
-      }
-    }
-    
-    
-    .selectize-control {
-      width: 100% !important;
-    }
-    .selectize-input {
-      width: 100% !important;
-    }
-
-    /* Hover effect on main tabs */
-    .nav-tabs > li > a:hover {
-      background-color: #27E7F5 !important;  /* teal blue on hover */
-      color: #000 !important;
-      border: 1px solid #ffc107;
-    }
-
-    .bootstrap-select,
-    .bootstrap-select .dropdown-menu {
-      width: 100% !important;
-      max-width: 100% !important;
-    }
-    
-    .dropdown-menu.inner {
-      max-height: 300px !important;
-      overflow-y: auto !important;
-    }
-  
-  
-  /* Make pickerInput dropdown items behave like selectInput */
-  .bootstrap-select .dropdown-menu li a {
-    white-space: normal !important;      /* allow multi-line wrapping */
-    line-height: 1.3 !important;         /* adjust vertical spacing */
-    padding-top: 6px !important;
-    padding-bottom: 6px !important;
-  }
-
-  /* Align and restyle check marks */
-  .bootstrap-select .dropdown-menu li a span.check-mark {
-    position: absolute !important;
-    right: 10px !important;
-    top: 50% !important;
-    transform: translateY(-50%);
-    color: #198754;                      /* green tick */
-    font-size: 14px;
-  }
-
-
-    /* Make pickerInput dropdown text darker and bolder like selectInput */
-.bootstrap-select .dropdown-menu li a span.text {
-  font-weight: 400 !important;   /* similar to selectInput weight */
-  color: #000 !important;        /* pure black text for better contrast */
-}
-
-    /* Optional: make the selected text (on the button) also bold */
-.bootstrap-select .filter-option-inner-inner {
-  font-weight: 400 !important;
-  color: #000 !important;
-}
-
-
-    /* Make selected/hovered pickerInput option lighter */
-.bootstrap-select .dropdown-menu li.active a,
-.bootstrap-select .dropdown-menu li:hover a {
-  background-color: #27e7f5 !important; /* light teal-blue background */
-  color: #000 !important;                /* ensure text stays readable */
-}
-
-/* Keep long information assignment text to max 2 visible lines */
-.assignment-two-lines {
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: normal !important;
-  line-height: 1.25em;
-  max-height: 2.5em;
-  cursor: help;
-}
-
-/* Better vertical alignment for multi-line table cells */
-#iris_data table.dataTable tbody td {
-  vertical-align: top;
-}
-
-
-/* Stable layout for All tasks DT table */
-#iris_data table.dataTable {
-  table-layout: fixed !important;
-  width: 100% !important;
-}
-
-/* Row-number column added by DT */
-#iris_data table.dataTable thead th:nth-child(1),
-#iris_data table.dataTable tbody td:nth-child(1) {
-  width: 45px !important;
-  min-width: 45px !important;
-  max-width: 45px !important;
-  white-space: nowrap !important;
-}
-
-/* Type column */
-#iris_data table.dataTable thead th:nth-child(2),
-#iris_data table.dataTable tbody td:nth-child(2) {
-  width: 150px !important;
-  min-width: 150px !important;
-  max-width: 150px !important;
-  white-space: normal !important;
-}
-
-/* Assignment column - fixed */
-#iris_data table.dataTable thead th:nth-child(3),
-#iris_data table.dataTable tbody td:nth-child(3) {
-  width: 380px !important;
-  min-width: 380px !important;
-  max-width: 380px !important;
-  white-space: normal !important;
-}
-
-/* Numeric / direction columns */
-#iris_data table.dataTable thead th:nth-child(n+5),
-#iris_data table.dataTable tbody td:nth-child(n+5) {
-  text-align: center !important;
-  white-space: normal !important;
-}
-
-/* Compact header */
-#iris_data table.dataTable thead th {
-  font-size: 12px !important;
-  padding: 6px 5px !important;
-  vertical-align: middle !important;
-}
-
-/* Compact body */
-#iris_data table.dataTable tbody td {
-  font-size: 13px !important;
-  padding: 6px 5px !important;
-  vertical-align: top !important;
-}
-
-
-
-  "),
-               
-               
-               ),
-    
-    
-    tags$script(HTML('
-(function registerGeoGamiTrajectoryAnimation() {
-  if (typeof Shiny === "undefined" || typeof HTMLWidgets === "undefined" || typeof L === "undefined") {
-    setTimeout(registerGeoGamiTrajectoryAnimation, 100);
-    return;
-  }
-
-  window.geogamiTrajectoryAnimations = window.geogamiTrajectoryAnimations || {};
-
-  function esc(value) {
-    return String(value == null ? "" : value)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
-  }
-
-  Shiny.addCustomMessageHandler("animateTrajectories", function(message) {
-    var mapId = message.mapId || "map";
-    var widget = HTMLWidgets.find("#" + mapId);
-
-    if (!widget || typeof widget.getMap !== "function") {
-      console.warn("Leaflet map not found for animation:", mapId);
-      return;
-    }
-
-    var map = widget.getMap();
-
-    var old = window.geogamiTrajectoryAnimations[mapId];
-    if (old) {
-      if (old.timer) clearInterval(old.timer);
-      if (old.group) map.removeLayer(old.group);
-      if (old.legend) map.removeControl(old.legend);
-    }
-
-    var group = L.layerGroup().addTo(map);
-    var trajectories = message.trajectories || [];
-    var duration = Number(message.duration || 6000);
-    var steps = Number(message.steps || 160);
-    var lineWeight = Number(message.lineWeight || 4);
-
-    var animated = [];
-    var allPoints = [];
-
-    trajectories.forEach(function(traj) {
-      var pts = [];
-      var lat = traj.lat || [];
-      var lng = traj.lng || [];
-      var n = Math.min(lat.length, lng.length);
-
-      for (var i = 0; i < n; i++) {
-        var la = Number(lat[i]);
-        var ln = Number(lng[i]);
-        if (isFinite(la) && isFinite(ln)) {
-          pts.push([la, ln]);
-          allPoints.push([la, ln]);
-        }
-      }
-
-      if (pts.length < 2) return;
-
-      var color = traj.color || "#d62728";
-
-      L.circleMarker(pts[0], {
-        radius: 3,
-        color: color,
-        fillColor: color,
-        fillOpacity: 1,
-        weight: 1
-      }).addTo(group);
-
-      var movingMarker = L.circleMarker(pts[0], {
-        radius: 4,
-        color: color,
-        fillColor: color,
-        fillOpacity: 1,
-        weight: 1
-      }).addTo(group);
-
-      var line = L.polyline([pts[0]], {
-        color: color,
-        weight: lineWeight,
-        opacity: 1
-      }).addTo(group);
-
-      animated.push({
-        pts: pts,
-        line: line,
-        movingMarker: movingMarker,
-        color: color,
-        label: traj.label || ""
-      });
-    });
-
-        if (animated.length === 0) return;
-
-    // Animation legend: visible only on the map during animation.
-    // This is not connected to any CSV download.
-    var legend = L.control({ position: "topright" });
-
-    legend.onAdd = function() {
-      var div = L.DomUtil.create("div", "geogami-trajectory-animation-legend");
-
-      var html = `
-        <div style="
-          background: white;
-          padding: 8px 10px;
-          border-radius: 6px;
-          box-shadow: 0 1px 5px rgba(0,0,0,0.35);
-          font-size: 13px;
-          line-height: 1.3;
-          max-width: 260px;
-        ">
-          <div style="font-weight: bold; margin-bottom: 5px;">
-            Animated trajectories
-          </div>
-      `;
-
-      animated.forEach(function(a) {
-        html += `
-          <div style="display: flex; align-items: center; gap: 6px; margin: 2px 0;">
-            <span style="
-              display: inline-block;
-              width: 14px;
-              height: 14px;
-              background: ${a.color};
-              border: 1px solid #333;
-            "></span>
-            <span>${esc(a.label)}</span>
-          </div>
-        `;
-      });
-
-      html += `</div>`;
-      div.innerHTML = html;
-
-      L.DomEvent.disableClickPropagation(div);
-      L.DomEvent.disableScrollPropagation(div);
-
-      return div;
-    };
-
-    legend.addTo(map);
-
-    if (allPoints.length > 1) {
-      map.fitBounds(L.latLngBounds(allPoints), { padding: [30, 30] });
-    }
-
-    var currentStep = 1;
-    var intervalMs = Math.max(15, duration / steps);
-
-    var timer = setInterval(function() {
-      currentStep++;
-      var fraction = Math.min(1, currentStep / steps);
-
-      animated.forEach(function(a) {
-        var count = Math.max(1, Math.ceil(fraction * a.pts.length));
-        var shown = a.pts.slice(0, count);
-        a.line.setLatLngs(shown);
-        a.movingMarker.setLatLng(shown[shown.length - 1]);
-      });
-
-      if (fraction >= 1) {
-        clearInterval(timer);
-      }
-    }, intervalMs);
-
-        window.geogamiTrajectoryAnimations[mapId] = {
-      group: group,
-      legend: legend,
-      timer: timer
-    };
-  });
-})();
-'))
-  ),
-  
-  theme = bs_theme(),  # initially empty theme
-  
-  # Sidebar with collapsible toggle
-  
+  tags$head(tags$link(rel = "stylesheet", href = "dashboard.css"),
+            tags$script(src = "dashboard.js", defer = NA)),
   sidebar = sidebar(
-    width = "300px",
-
-    #filter 0 - event selection (above game selection)
-    conditionalPanel(
-      condition = "typeof window.location.search.match(/token=([^&]+)/) !== 'undefined' && window.location.search.match(/token=([^&]+)/) !== null",
-      div(style = "border: 1px solid #ccc; padding: 10px; margin-bottom: 15px; border-radius: 8px;",
-          pickerInput(
-            inputId = "selected_event",
-            label = "Select event:",
-            choices = NULL,  # populated from /event/userevents
-            multiple = FALSE,
-            options = list(
-              `live-search` = FALSE,
-              `none-selected-text` = "No events",
-              `width` = '100%',
-              container = FALSE,
-              size = 10
-            )
-          ),
-          # Deselect button. Only visible while an event is selected; lets the
-          # user drop the filter and get the full game list back.
-          uiOutput("clear_event_filter_ui")
+    width = 250, title = "Data selection", class = "geo-sidebar", padding = 18, gap = 0,
+    conditionalPanel("output.dashboard_authenticated === 'TRUE' && output.dashboard_is_upload !== 'TRUE'",
+      div(class = "geo-sidebar-field geo-event-selection",
+        pickerInput("selected_event", "Event", choices = NULL,
+                    options = list(`live-search` = TRUE, `none-selected-text` = "No events", size = 10))
+      ),
+      div(class = "geo-sidebar-field geo-game-selection",
+        pickerInput("selected_games", "Game", choices = NULL,
+                    options = list(`live-search` = TRUE, `none-selected-text` = "Select a game", size = 10, sanitize = FALSE)),
+        div(class = "geo-environment-legend",
+            tags$span(tags$span(class = "geo-badge geo-badge-rw", "RW"), "Real world"),
+            tags$span(tags$span(class = "geo-badge geo-badge-ve", "VE"), "Virtual environment"))
+      ),
+      div(class = "geo-sidebar-field geo-session-selection",
+        tags$h3("Player sessions", class = "geo-sidebar-heading"),
+        div(class = "geo-session-search", icon("magnifying-glass"),
+          tags$input(id = "dashboard_session_search", type = "search", placeholder = "Search sessions\u2026",
+                     `aria-label` = "Search player sessions", autocomplete = "off")),
+        div(class = "geo-session-actions", uiOutput("dashboard_session_count"),
+          tags$button(type = "button", class = "geo-sidebar-link", `data-session-action` = "all", "Select all"),
+          tags$button(type = "button", class = "geo-sidebar-link", `data-session-action` = "none", "Clear")),
+        # Preserve the existing selection binding used by comparisons and exports.
+        # The visible session rows update this picker through its normal change event.
+        div(class = "geo-session-binding", `aria-hidden` = "true",
+          pickerInput("selected_files", NULL, choices = NULL, multiple = TRUE)),
+        uiOutput("dashboard_session_list"),
+        p(id = "dashboard_session_no_results", class = "geo-session-empty", hidden = NA,
+          "No sessions match your search.")
       )
     ),
-
-    # Share event button — appears once an event is selected (owner-only on the server)
-    conditionalPanel(
-      condition = "typeof window.location.search.match(/token=([^&]+)/) !== 'undefined' && window.location.search.match(/token=([^&]+)/) !== null",
-      uiOutput("share_event_button_ui")
+    conditionalPanel("output.dashboard_is_upload === 'TRUE'",
+      div(class = "geo-import-card", icon("file-code"), tags$strong("Imported session"),
+          textOutput("dashboard_import_name"),
+          conditionalPanel("output.dashboard_authenticated === 'TRUE'", actionButton("dashboard_use_account", "Back to account data")))
     ),
-
-    #filter 1 - game selection
-    conditionalPanel(
-      condition = "typeof window.location.search.match(/token=([^&]+)/) !== 'undefined' && window.location.search.match(/token=([^&]+)/) !== null",
-      div(style = "border: 1px solid #ccc; padding: 10px; margin-bottom: 15px; border-radius: 8px;",
-          pickerInput(
-            inputId = "selected_games",
-            label = "Select a game:",
-            choices = NULL,  # Leave it empty initially
-            multiple = FALSE,
-            options = list(
-              `actions-box` = TRUE,
-              `live-search` = FALSE,
-              `none-selected-text` = "Select a game",
-              `width` = '100%',
-              container = FALSE,
-              size = 10,
-              sanitize = FALSE  # allow the colored RW/VE badge HTML in options
-            )
-          ),
-          # Legend: what the RW / VE badges mean. A wrapping flex row so each
-          # badge+label pair stays together but drops to the next line on
-          # narrow (responsive) widths.
-          div(
-            style = "margin-top: 6px; font-size: 11px; color: #555; display: flex; flex-wrap: wrap; gap: 2px 10px;",
-            tags$span(
-              style = "white-space: nowrap;",
-              tags$span(class = "geo-badge geo-badge-rw", "RW"), "Real world"
-            ),
-            tags$span(
-              style = "white-space: nowrap;",
-              tags$span(class = "geo-badge geo-badge-ve", "VE"), "Virtual env."
-            )
-          )
-      )
+    conditionalPanel("output.dashboard_authenticated !== 'TRUE' && output.dashboard_is_upload !== 'TRUE'",
+      p("Open this dashboard from GeoGami to access your events and games, or import a track JSON file.", class = "geo-muted")
     ),
-    
-    # Share button — appears once a game is selected
-    conditionalPanel(
-      condition = "typeof window.location.search.match(/token=([^&]+)/) !== 'undefined' && window.location.search.match(/token=([^&]+)/) !== null",
-      uiOutput("share_button_ui")
-    ),
-
-    #filter 2 - JSON file selection
-    conditionalPanel(
-      condition = "typeof window.location.search.match(/token=([^&]+)/) !== 'undefined' && window.location.search.match(/token=([^&]+)/) !== null",
-      div(style = "border: 1px solid #ccc; padding: 10px; margin-bottom: 15px; border-radius: 8px;",
-          pickerInput(
-            inputId = "selected_files",
-            label = "Select the players:",
-            choices = NULL,  # Leave it empty initially
-            multiple = TRUE,
-            options = list(
-              `actions-box` = TRUE,
-              `live-search` = FALSE,
-              `none-selected-text` = "Select a player",
-              `width` = '100%',
-              container = FALSE,
-              size = 10
-            )
-          ),
-          #actionButton("reset", "Reset", icon = icon("refresh"), style = "width:150px; margin-top: 10px; margin-bottom: 15px; margin-right: 15px"),
-          textOutput("info_download"),
-          downloadButton("download_json", "Download", icon = icon("download"), style = "width:150px; margin-top: 10px; margin-bottom: 15px;"),
-          # Per-track share button — appears when exactly one track is selected.
-          uiOutput("share_track_button_ui")
-      )
-    ),
-
-    # Upload JSON file section
-    div(style = "border: 1px solid #ccc; padding: 10px; margin-bottom: 5px; border-radius: 5px;",
-        fileInput("uploaded_json_file", "Upload JSON file:", accept = ".json", multiple = FALSE),
-    ),
-
-    #filter 2 - ID - 2nd div
-    # div(style = "border: 1px solid #ccc; padding: 10px; margin-bottom: 15px; border-radius: 8px;",
-    #     numericInput("num_value", "Enter a task number:", value = 1, min = 1, max = 1)
-    # ),
-
-    radioButtons("theme", "Choose Theme:",
-                 choices = c("Light", "Dark"),
-                 inline = TRUE,
-                 selected = "Light"),
-
-    div(
-      style = "text-align: left; color: #888; font-size: 12px;",
-
-      # Latest GitHub release version + last commit time on main (see build_version_footer)
-      HTML(version_footer)
+    div(class = "geo-sidebar-footer",
+      conditionalPanel("output.dashboard_authenticated === 'TRUE' && output.dashboard_is_upload !== 'TRUE'",
+        uiOutput("clear_event_filter_ui")),
+      radioButtons("theme", "Appearance", choices = c("Light", "Dark"), inline = TRUE, selected = "Light"),
+      tags$details(class = "geo-import-details", tags$summary(icon("file-import"), "Import from file"),
+        div(class = "geo-import-input", fileInput("uploaded_json_file", "Import a track JSON", accept = ".json"))),
+      tags$a("Open GeoGami", href = "https://app.geogami.uni-muenster.de/", target = "_blank", rel = "noopener"),
+      div(class = "geo-version", version_footer)
     )
   ),
-
-  # Main tabs
-  tabsetPanel(
-    tabPanel(
-      'All tasks',
-      div(
-        style = "display: flex; justify-content: flex-start; gap: 40px; align-items: flex-start;
-             margin-top: 20px; margin-bottom: 15px;
-             border: 1px solid #ccc; padding: 10px;",
-        # Task filter
-        div(style = "min-width: 300px;", 
-            uiOutput("task_id_selector")),
-        
-        # Player selector
-        div(style = "min-width: 300px;", 
-            uiOutput("file_selector_ui"))
-      ),
-      
-      div(
-        style = "display: flex; justify-content: space-between; align-items: flex-end; gap: 20px; margin-bottom: 10px;",
-        
-        uiOutput("player_info_box"),
-        
-        uiOutput("advanced_direction_analysis_all_ui")
-      ),
-      
-      DTOutput('iris_data'),
-      div(
-        style = "border: 0px solid #ccc; padding: 10px; margin-top: 15px; border-radius: 8px;",
-        uiOutput('save_big_table')
-      )
-    ),
-    
-    tabPanel(
-      'Map',
-      div(
-        style = "display: flex; justify-content: flex-start; gap: 40px; align-items: flex-start;
-             margin-top: 20px; margin-bottom: 15px;
-             border: 1px solid #ccc; padding: 10px;",
-        div(style = "min-width: 300px;", pickerInput("num_value", "Selected Tasks:", choices = 1, selected = 1, multiple = FALSE)),
-        div(style = "flex: 1; min-width: 900px;", uiOutput("file_selector_ui3"))
-      ),
-      textOutput("mapLegend"),
-      div(id = "map_container", leafletOutput("map"), style = "margin-top: 5px"),
-      div(
-        style = "display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; padding: 10px; margin-top: 5px;",
-        downloadButton('downloadMap', 'Save the map'),
-        div(
-          style = "border: 1px solid var(--bs-border-color, #ccc); border-radius: 6px; padding: 8px 12px; min-width: 360px;",
-          tags$div("Map legend", style = "font-weight: 600; margin-bottom: 6px;"),
-          div(
-            style = "display: grid; grid-template-columns: repeat(2, minmax(155px, 1fr)); gap: 6px 16px;",
-            div(
-              style = "display: flex; align-items: center; gap: 8px;",
-              tags$span("\u2192", style = "display: inline-block; width: 28px; color: blue; font-size: 28px; font-weight: 700; line-height: 20px;"),
-              tags$span("Player's direction")
-            ),
-            div(
-              style = "display: flex; align-items: center; gap: 8px;",
-              tags$span("\u2192", style = "display: inline-block; width: 28px; color: green; font-size: 28px; font-weight: 700; line-height: 20px;"),
-              tags$span("Correct direction")
-            ),
-            div(
-              style = "display: flex; align-items: center; gap: 8px;",
-              tags$img(
-                src = "https://raw.githubusercontent.com/origami-team/origami/master/src/assets/icons/marker-editor.png",
-                width = "20", height = "20", alt = "Blue marker"
-              ),
-              tags$span("Player's position")
-            ),
-            div(
-              style = "display: flex; align-items: center; gap: 8px;",
-              tags$img(
-                src = "https://raw.githubusercontent.com/origami-team/origami/master/src/assets/icons/marker-editor-solution.png",
-                width = "20", height = "20", alt = "Green marker"
-              ),
-              tags$span("Correct position")
+  uiOutput("dashboard_context"),
+  uiOutput("dashboard_summaries"),
+  conditionalPanel("output.dashboard_has_track !== 'TRUE'",
+    div(class = "geo-empty-state", icon("chart-line"), h2("Explore your game sessions"),
+        p("Select an event, game and session in the sidebar, or import a track JSON file to get started."))
+  ),
+  conditionalPanel("output.dashboard_has_track === 'TRUE'",
+    div(class = "geo-analysis-shell",
+      conditionalPanel("input.dashboard_tabs == 'Compare Players' || input.dashboard_tabs == 'Statistics'",
+        div(class = "geo-toolbar geo-group-toolbar",
+            uiOutput("file_selector_ui1"),
+            p("Compare the selected task across these sessions. Task numbers follow the reference session.", class = "geo-muted"))) ,
+      tabsetPanel(id = "dashboard_tabs",
+        tabPanel("All tasks",
+          div(class = "geo-toolbar",
+              div(class = "geo-task-filter", uiOutput("task_id_selector")),
+              selectInput("dashboard_task_type", "Task type", choices = c("All types" = "__all__")),
+              tags$details(class = "geo-column-menu", tags$summary(icon("sliders"), "Columns"),
+                checkboxGroupInput("dashboard_columns", "Visible columns",
+                  choices = c("Assignment", "Result" = "Answer", "Time" = "Time (s)", "Tries", "Error" = "Error (°/m)"),
+                  selected = c("Assignment", "Answer", "Time (s)", "Tries", "Error (°/m)"))),
+              uiOutput("advanced_direction_analysis_all_ui")
+          ),
+          div(class = "geo-tasks-layout",
+            div(class = "geo-task-table", DTOutput("iris_data"),
+                p("Select a task row to inspect its result and map.", class = "geo-table-help")),
+            div(class = "geo-task-preview",
+                uiOutput("dashboard_task_detail"),
+                conditionalPanel("output.dashboard_task_has_map === 'TRUE'", leafletOutput("dashboard_task_map", height = 225)),
+                conditionalPanel("output.dashboard_task_has_map !== 'TRUE'", div(class = "geo-map-empty", textOutput("dashboard_task_map_message"))),
+                actionButton("dashboard_open_map", "Open full map", icon = icon("map")))
+          )
+        ),
+        tabPanel("Map",
+          div(class = "geo-toolbar",
+              pickerInput("num_value", "Task", choices = 1, selected = 1),
+              uiOutput("file_selector_ui3")),
+          conditionalPanel("output.dashboard_is_upload !== 'TRUE'",
+            div(class = "geo-playback-toolbar",
+              tags$button(id = "dashboard_playback_pause", type = "button", class = "btn btn-default", disabled = NA, "Pause"),
+              tags$label(`for` = "dashboard_playback_seek", "Route playback"),
+              tags$input(id = "dashboard_playback_seek", type = "range", min = 0, max = 100, value = 0, disabled = NA),
+              tags$label(`for` = "dashboard_playback_speed", "Speed"),
+              tags$select(id = "dashboard_playback_speed", class = "form-select",
+                          tags$option(value = "0.5", "0.5\u00d7"), tags$option(value = "1", selected = NA, "1\u00d7"), tags$option(value = "2", "2\u00d7"))
+            )),
+          textOutput("mapLegend"),
+          div(id = "map_container", leafletOutput("map", height = 520)),
+          div(class = "geo-map-footer", downloadButton("downloadMap", "Export map"),
+            div(class = "geo-map-legend", tags$strong("Map legend"),
+              tags$span(class = "geo-legend-blue", "\u2192 Player direction"),
+              tags$span(class = "geo-legend-green", "\u2192 Correct direction"),
+              tags$span(class = "geo-legend-blue", icon("location-dot"), " Player position"),
+              tags$span(class = "geo-legend-green", icon("location-dot"), " Correct position"),
+              tags$span(class = "geo-legend-red", "\u2014 Recorded route")))
+        ),
+        tabPanel("Pictures",
+          div(class = "geo-toolbar", pickerInput("num_value_pictures", "Task", choices = 1, selected = 1),
+              p("Photos recorded for the reference session.", class = "geo-muted")),
+          div(class = "geo-photo-gallery", uiOutput("photo_display"))
+        ),
+        tabPanel("Compare Players",
+          div(class = "geo-toolbar", pickerInput("num_value_comparison", "Task", choices = 1, selected = 1),
+              uiOutput("advanced_direction_analysis_compare_ui")),
+          conditionalPanel("output.dashboard_is_upload === 'TRUE'", p("Import contains one session. Open account data to compare multiple sessions.", class = "geo-empty-note")),
+          textOutput("tabLegend"),
+          conditionalPanel("output.tabLegend != 'Task type: Direction determination'",
+            div(class = "geo-panel", h3(textOutput("cmp_table1_title", inline = TRUE)),
+                div(class = "geo-table-scroll", tableOutput("cmp_table1")), downloadButton("save_table1", "Export comparison CSV"))),
+          conditionalPanel("output.tabLegend == 'Task type: Direction determination'",
+            div(class = "geo-panel", h3("Direction task comparison"),
+                div(class = "geo-table-scroll", tableOutput("cmp_table2")), downloadButton("save_table2", "Export comparison CSV")))
+        ),
+        tabPanel("Statistics",
+          div(class = "geo-toolbar", pickerInput("num_value_Statistics", "Task", choices = 1, selected = 1)),
+          textOutput("graphLegend"),
+          conditionalPanel("output.dashboard_is_upload === 'TRUE'", p("Import contains one session. Open account data to view group statistics.", class = "geo-empty-note")),
+          conditionalPanel("output.dashboard_is_upload !== 'TRUE'",
+            div(class = "geo-statistics-grid",
+              div(class = "geo-panel", h3("Answer and error"),
+                conditionalPanel("output.graphLegend != 'Task type: Direction determination' && output.graphLegend != 'Task type: Free' && output.graphLegend != 'Task type: Self location' && output.graphLegend != 'Task type: Object location'",
+                  plotOutput("pie_chart"), downloadButton("save_picture", "Export chart PNG")),
+                conditionalPanel("output.graphLegend == 'Task type: Direction determination' || output.graphLegend == 'Task type: Free' || output.graphLegend == 'Task type: Self location' || output.graphLegend == 'Task type: Object location'",
+                  plotOutput("pie_chart2"), downloadButton("save_picture2", "Export chart PNG"))),
+              conditionalPanel("output.graphLegend == 'Task type: Navigation to flag' || output.graphLegend == 'Task type: Navigation with arrow' || output.graphLegend == 'Task type: Navigation via text' || output.graphLegend == 'Task type: Navigation via photo'",
+                div(class = "geo-panel", h3("Time vs distance"), plotOutput("time_chart"), downloadButton("save_time_chart", "Export chart PNG")))
             )
           )
         )
       )
-    ),
-    tabPanel(
-      'Pictures',
-      div(
-        style = "display: flex; justify-content: flex-start; gap: 40px; align-items: flex-start;
-             margin-top: 20px; margin-bottom: 15px;
-             border: 1px solid #ccc; padding: 10px;",
-        div(style = "min-width: 300px;", pickerInput("num_value_pictures", "Selected Tasks:", choices = 1, selected = 1,multiple = FALSE)),
-        div(style = "min-width: 300px;", uiOutput("file_selector_ui4"))
-      ),
-      card(uiOutput("photo_display"))
-    ),
-    tabPanel(
-      'Compare Players',
-      div(
-        style = "display: flex; justify-content: flex-start; gap: 40px; align-items: flex-start;
-           margin-top: 20px; margin-bottom: 15px;
-           border: 1px solid #ccc; padding: 10px;",
-        div(style = "min-width: 300px; max-width: 350px;", 
-            pickerInput("num_value_comparison", "Selected Tasks:", choices = 1, selected = 1, multiple = FALSE)
-        ),
-        div(style = "flex: 1; max-width: 700px;", 
-            uiOutput("file_selector_ui1")
-        )
-        
-        #NOTE FOR SELECTIZE INPUT HANDLING THE MAXIMUM WIDTH OF CHOSEN PLAYERS IN 'COMPARISON' FROM THE ABOVE  - ADDED THE CODE WRITTEN BELOW IN THE CSS TAGS$HEAD$STYLE ABOVE,
-        # .selectize-control {
-        #   width: 100% !important;
-        # }
-        # .selectize-input {
-        #   width: 100% !important;
-        # }
-      ),
-      textOutput("tabLegend"),
-      conditionalPanel(
-        condition = "
-          output.tabLegend == 'Task type: Navigation to flag' ||
-          output.tabLegend == 'Task type: Navigation with arrow' ||
-          output.tabLegend == 'Task type: Navigation via text' ||
-          output.tabLegend == 'Task type: Navigation via photo' ||
-          output.tabLegend == 'Task type: Self location' ||
-          output.tabLegend == 'Task type: Object location' ||
-          output.tabLegend == 'Task type: Free'
-        ",
-        card(
-          h4(textOutput("cmp_table1_title", inline = TRUE)),
-          tableOutput('cmp_table1'),
-          downloadButton('save_table1', 'Save to csv'),
-          style = "margin-top: 10px"
-        )
-      ),
-      conditionalPanel(
-        condition = "output.tabLegend == 'Task type: Direction determination'",
-        card(
-          div(
-            style = "display: flex; justify-content: space-between; align-items: center; gap: 20px; margin-bottom: 10px;",
-            
-            h4("Direction Task Comparison", style = "margin: 0;"),
-            
-            uiOutput("advanced_direction_analysis_compare_ui")
-          ),
-          
-          tableOutput('cmp_table2'),
-          downloadButton('save_table2', 'Save to csv'),
-          style = "margin-top: 10px"
-        )
-      )
-    ),
-    tabPanel(
-      'Statistics',
-      div(
-        style = "display: flex; justify-content: flex-start; gap: 40px; align-items: flex-start;
-             margin-top: 20px; margin-bottom: 15px;
-             border: 1px solid #ccc; padding: 10px;",
-        div(style = "min-width: 300px;  max-width: 350px;", 
-            pickerInput("num_value_Statistics", "Selected Tasks:", choices = 1, selected = 1, multiple = FALSE)
-        ),
-        div(style = "flex: 1; max-width: 700px;", 
-            uiOutput("file_selector_ui2")
-        )
-      ), 
-      # .selectize-control {
-      #   width: 100% !important;
-      # }
-      # .selectize-input {
-      #   width: 100% !important;
-      # }
-      
-      textOutput("graphLegend"),
-      #if the task category is navigation
-      conditionalPanel(condition = "output.graphLegend == 'Task type: Navigation to flag' || output.graphLegend == 'Task type: Navigation with arrow' || output.graphLegend == 'Task type: Navigation via text' || output.graphLegend == 'Task type: Navigation via photo'",
-                       pickerInput(
-                         inputId = "graph_filter",
-                         label = "Choose graphic to display:",
-                         choices = c("Time VS Distance","Answer & Error"),
-                         selected = c("Answer & Error")
-                       ), conditionalPanel(
-                         condition = "input.graph_filter == 'Answer & Error'",
-                         card(card_header("Pie chart") , full_screen = TRUE, plotOutput('pie_chart'), 
-                              div(style = "border: 0px solid #ccc; padding: 10px; margin-top: 15px; border-radius: 8px;",
-                                  downloadButton('save_picture','Save to png')))
-                       ), conditionalPanel(
-                         condition = "input.graph_filter == 'Time VS Distance'",
-                         card(card_header("Time vs distance scatter plot"), full_screen = TRUE, plotOutput('time_chart'), 
-                              div(style = "border: 0px solid #ccc; padding: 10px; margin-top: 15px; border-radius: 8px;",
-                                  downloadButton('save_time_chart','Save to png')))
-                       )
-      ),
-      #else, for the other tasks
-      conditionalPanel(condition = "output.graphLegend == 'Task type: Direction determination' || output.graphLegend == 'Task type: Free' || output.graphLegend == 'Task type: Self location' || output.graphLegend == 'Task type: Object location'",
-                       pickerInput(
-                         inputId = "graph_filter2",
-                         label = "Choose graphic to display:",
-                         choices = c("Answer & Error"),
-                         selected = c("Answer & Error")
-                       ), conditionalPanel(
-                         condition = "input.graph_filter2 == 'Answer & Error'",
-                         card(card_header("Pie chart"), full_screen = TRUE, plotOutput('pie_chart2'),
-                              div(style = "border: 0px solid #ccc; padding: 10px; margin-top: 15px; border-radius: 8px;",
-                                  downloadButton('save_picture2','Save to png')))
-                       ),
-      ),
     )
   )
 )
 
 
 server <- function(input, output, session) {
+  dashboard_source <- reactiveVal("server")
+  observeEvent(input$uploaded_json_file, {
+    dashboard_source("upload")
+    updatePickerInput(session, "num_value", selected = "1")
+  }, priority = 100)
+  observeEvent(input$dashboard_use_account, { dashboard_source("server") }, priority = 100)
+
   
   #####---------TYPE CONVERSION HELPER FUNCTIONS FOR VR HELEN'S Tasks - Start--------######
   # num <- function(x) suppressWarnings(as.numeric(x))
@@ -1037,6 +452,63 @@ server <- function(input, output, session) {
     if (length(x) == 0) return(NA)
     x[1]
   }
+
+  # Optional fields can be absent for every event in an unfinished track.
+  # Pad scalar columns without changing the recorded geometry or event order.
+  normalize_dashboard_track <- function(track) {
+    fill_record <- function(record, fields, n) {
+      if (is.null(record) || length(record) == 0) {
+        record <- data.frame(row.names = seq_len(n))
+      }
+      shiny::validate(shiny::need(is.data.frame(record), "Unsupported track data format."))
+      for (name in names(fields)) {
+        default <- fields[[name]]
+        if (is.list(default)) {
+          record[[name]] <- fill_record(record[[name]], default, n)
+        } else {
+          x <- record[[name]]
+          values <- rep(default, n)
+          keep <- seq_len(min(length(x), n))
+          if (is.atomic(x) && is.null(dim(x))) {
+            values[keep] <- x[keep]
+          } else {
+            for (i in keep) values[i] <- safe_scalar(x[i])
+          }
+          if (is.numeric(default)) values <- suppressWarnings(as.numeric(values))
+          record[[name]] <- values
+        }
+      }
+      record
+    }
+    shiny::validate(shiny::need(is.list(track), "Unsupported track data format."))
+    events <- track$events
+    n <- if (is.null(events) || length(events) == 0) 0L else NROW(events)
+    track$events <- fill_record(events, list(
+      type = NA_character_, timestamp = NA_character_, correct = NA,
+      task = list(`_id` = NA_character_, type = NA_character_, category = NA_character_,
+                  evaluate = NA_character_, question = list(text = NA_character_, mode = NA_character_),
+                  answer = list(type = NA_character_), settings = list(accuracy = NA_real_)),
+      answer = list(correct = NA, text = NA_character_, numberInput = NA_real_,
+                    selectedChoice = list(value = NA_character_)),
+      position = list(coords = list(longitude = NA_real_, latitude = NA_real_)),
+      clickPosition = list(longitude = NA_real_, latitude = NA_real_)
+    ), n)
+    waypoints <- track$waypoints
+    n <- if (is.null(waypoints) || length(waypoints) == 0) 0L else NROW(waypoints)
+    track$waypoints <- fill_record(waypoints, list(
+      taskNo = NA_integer_, timestamp = NA_character_,
+      position = list(coords = list(longitude = NA_real_, latitude = NA_real_, accuracy = NA_real_))
+    ), n)
+    track
+  }
+
+  coordinate_pair_at <- function(coords, i) {
+    xy <- tryCatch(if (is.matrix(coords)) coords[i, ] else coords[[i]],
+                   error = function(e) NULL)
+    xy <- suppressWarnings(as.numeric(unlist(xy, use.names = FALSE)))
+    if (length(xy) < 2 || !all(is.finite(xy[1:2]))) return(NULL)
+    xy[1:2]
+  }
   
   normalize_deg <- function(x) {
     x <- num(x)
@@ -1044,6 +516,7 @@ server <- function(input, output, session) {
   }
   
   format_numeric_clean <- function(x, digits = 2) {
+    if (!length(x)) return(character(0))
     x <- num(x)
     out <- rep(NA_character_, length(x))
     ok <- is.finite(x)
@@ -1052,6 +525,7 @@ server <- function(input, output, session) {
   }
   
   format_bearing_deg <- function(x, digits = 2) {
+    if (!length(x)) return(character(0))
     x <- normalize_deg(x)
     format_numeric_clean(x, digits)
   }
@@ -2027,7 +1501,7 @@ server <- function(input, output, session) {
   format_answer_value <- function(evts, idx) {
     # idx should be the chosen "final" event index for the task block
     atype <- try(evts$task$answer$type[idx], silent = TRUE)
-    if (inherits(atype, "try-error") || is.null(atype) || length(atype) == 0) return(NA_character_)
+    if (inherits(atype, "try-error") || is.null(atype) || length(atype) == 0 || is.na(atype)) return(NA_character_)
     
     if (atype == "TEXT") {
       v <- try(evts$answer$text[idx], silent = TRUE)
@@ -2098,6 +1572,7 @@ server <- function(input, output, session) {
     if (is.null(track) || is.null(track$events)) {
       return(data.frame())
     }
+    track <- normalize_dashboard_track(track)
     evts <- track$events
     sl <- task_slices_by_init_safe(evts)
     if (!nrow(sl)) return(data.frame())
@@ -2613,6 +2088,11 @@ server <- function(input, output, session) {
         game_name <- names(games_map)[idx[1]]
       }
     }
+    if (is.na(game_name) && isTRUE(event_is_active())) {
+      event_games <- event_games_rv()[[input$selected_event]]
+      idx <- which(event_games == input$selected_games)
+      if (length(idx)) game_name <- names(event_games)[idx[1]]
+    }
     
     if (is.null(game_name) || length(game_name) == 0 || is.na(game_name)) {
       game_name <- "Unknown Game"
@@ -2654,7 +2134,12 @@ server <- function(input, output, session) {
 
   
   selected_game_is_virtual <- reactive({
-    req(input$selected_games)
+    if (identical(dashboard_source(), "upload")) {
+      track <- uploaded_json()[[1]]
+      env <- track$events$task$virEnvType
+      return(any(!is.na(env) & nzchar(env)))
+    }
+    if (!length(input$selected_games)) return(FALSE)
     
     env_map <- game_is_ve_rv()
     
@@ -2736,7 +2221,12 @@ server <- function(input, output, session) {
   selected_game_tracks_rv <- reactiveVal()
   
   num_value_num <- reactive({
-    suppressWarnings(as.integer(input$num_value))
+    value <- suppressWarnings(as.integer(input$num_value))
+    if (length(value) != 1 || is.na(value) || value < 1L) value <- 1L
+    # A new reference/upload can have fewer tasks while the browser still sends
+    # the previous picker value. Use a valid task before processing its map.
+    n <- nrow(dashboard_summary())
+    if (n > 0 && value > n) 1L else value
   })
   
   
@@ -2808,14 +2298,66 @@ server <- function(input, output, session) {
   #### only players selected on left should appear on right *starts) #####
   
   filtered_choices_r <- reactive({
-    req(choices_rv())
-    req(input$selected_files)
-    
     all_choices <- choices_rv()
+    if (!length(all_choices)) return(setNames(character(0), character(0)))
     sel <- input$selected_files
     
     # keep only players currently selected in the left sidebar
     all_choices[all_choices %in% sel]
+  })
+
+  dashboard_session_records <- function(tracks) {
+    empty <- data.frame(id = character(), player = character(), date = character(), timestamp = character())
+    if (is.null(tracks) || !length(tracks[["_id"]])) return(empty)
+    at <- function(column, i) {
+      if (length(column) < i) return(character(0))
+      values <- as.character(unlist(column[[i]], use.names = FALSE))
+      values[!is.na(values) & nzchar(trimws(values))]
+    }
+    ids <- as.character(tracks[["_id"]])
+    rows <- lapply(seq_along(ids), function(i) {
+      player <- at(tracks$players, i)
+      timestamp <- at(tracks$createdAt, i)
+      raw <- if (length(timestamp)) timestamp[1] else ""
+      parsed <- parse_ts(raw)
+      date <- if (!nzchar(raw)) "Date not recorded" else if (!is.na(parsed[1])) {
+        format(parsed[1], "%d %b %Y, %H:%M", tz = "Europe/Berlin")
+      } else if (grepl("^\\d{4}-\\d{2}-\\d{2}$", raw)) {
+        d <- suppressWarnings(as.Date(raw, format = "%Y-%m-%d"))
+        if (is.na(d)) raw else format(d, "%d %b %Y")
+      } else raw
+      data.frame(id = ids[i], player = if (length(player)) paste(player, collapse = ", ") else "Unnamed session",
+                 date = date, timestamp = raw, stringsAsFactors = FALSE)
+    })
+    records <- do.call(rbind, rows)
+    records[!is.na(records$id) & nzchar(records$id), , drop = FALSE]
+  }
+
+  output$dashboard_session_list <- renderUI({
+    if (!identical(dashboard_source(), "server")) return(NULL)
+    records <- dashboard_session_records(selected_game_tracks_rv())
+    records <- records[records$id %in% choices_rv(), , drop = FALSE]
+    if (!nrow(records)) return(p("No sessions recorded for this game.", class = "geo-session-empty"))
+    selected <- input$selected_files
+    reference <- current_single_player()
+    div(class = "geo-session-list", role = "group", `aria-label` = "Player sessions",
+      lapply(seq_len(nrow(records)), function(i) {
+        row <- records[i, , drop = FALSE]
+        viewing <- row$id %in% reference
+        div(class = paste("geo-session-row", if (viewing) "is-viewing" else ""),
+            `data-session-search` = paste(row$player, row$date, row$id),
+          tags$label(class = "geo-session-check",
+            tags$input(type = "checkbox", class = "geo-session-checkbox", value = row$id,
+              checked = if (row$id %in% selected) "checked" else NULL,
+              `aria-label` = paste("Select", row$player, "session", row$date))),
+          tags$button(type = "button", class = "geo-session-name", `data-session-id` = row$id,
+            `aria-pressed` = if (viewing) "true" else "false",
+            `aria-label` = paste("View", row$player, "session", row$date),
+            tags$strong(row$player), tags$time(datetime = row$timestamp, row$date)),
+          if (viewing) tags$span(class = "geo-session-viewing", "Viewing")
+        )
+      })
+    )
   })
   
   
@@ -2825,6 +2367,7 @@ server <- function(input, output, session) {
   
   current_single_player <- reactive({
     choices_now <- filtered_choices_r()
+    if (!length(choices_now)) return(NULL)
     cur <- selected_single_player_rv()
     
     if (!is.null(cur) && length(cur) > 0 && cur[1] %in% choices_now) {
@@ -2836,6 +2379,12 @@ server <- function(input, output, session) {
   
   sync_single_player_pickers <- function(selected = NULL) {
     choices_now <- filtered_choices_r()
+    if (!length(choices_now)) {
+      for (id in c("selected_data_file_all", "selected_data_file_map", "selected_data_file_pictures")) {
+        updatePickerInput(session, id, choices = character(0), selected = character(0))
+      }
+      return()
+    }
     
     if (is.null(selected) || length(selected) == 0 || !(selected[1] %in% choices_now)) {
       selected <- choices_now[1]
@@ -2868,6 +2417,11 @@ server <- function(input, output, session) {
   # When the left sidebar selected players change, keep the selected player valid
   observeEvent(filtered_choices_r(), {
     choices_now <- filtered_choices_r()
+    if (!length(choices_now)) {
+      selected_single_player_rv(NULL)
+      sync_single_player_pickers()
+      return()
+    }
     cur <- selected_single_player_rv()
     
     selected_now <- if (!is.null(cur) && length(cur) > 0 && cur[1] %in% choices_now) {
@@ -2879,6 +2433,14 @@ server <- function(input, output, session) {
     selected_single_player_rv(selected_now)
     sync_single_player_pickers(selected_now)
   }, ignoreInit = FALSE)
+
+  # A session-name button chooses the reference; checkboxes choose the group.
+  observeEvent(input$dashboard_reference_session, {
+    id <- as.character(input$dashboard_reference_session)
+    if (length(id) != 1 || !id %in% choices_rv() || !id %in% input$selected_files ||
+        !identical(dashboard_source(), "server")) return()
+    selected_single_player_rv(id)
+  }, priority = 10)
   
   # If changed in All tasks tab
   observeEvent(input$selected_data_file_all, {
@@ -2991,6 +2553,7 @@ server <- function(input, output, session) {
     url <- paste0(api_url, "/track/", key)
     tr <- fetch_games_data_from_server(url, token)
     
+    if (!is.null(tr)) tr <- normalize_dashboard_track(tr)
     if (!is.null(tr) && !is.null(tr$events)) {
       tr$events <- fix_vr_distance_tasks(tr$events)
       tr$events <- fix_direction_tasks(tr$events)
@@ -3137,13 +2700,11 @@ server <- function(input, output, session) {
     tokenParam <- query[["token"]]
     accessToken_rv(tokenParam)
   })
-  # Theme options
+  # Keep Bootstrap widgets and the custom dashboard surfaces on the same theme.
   observe({
-    if (input$theme == "Dark") {
-      session$setCurrentTheme(bs_theme(bootswatch = "solar"))
-    } else {
-      session$setCurrentTheme(bs_theme(bootswatch = "flatly"))
-    }
+    dark <- identical(input$theme, "Dark")
+    session$setCurrentTheme(dashboard_theme(dark))
+    session$sendCustomMessage("dashboardTheme", if (dark) "dark" else "light")
   })
   output$text <- renderText({
     paste("Current theme is:", input$theme)
@@ -3327,12 +2888,8 @@ server <- function(input, output, session) {
   # "these are all the players that exist".)
   output$clear_event_filter_ui <- renderUI({
     req(event_is_active())
-    div(
-      style = "margin-top: 8px;",
-      actionButton("clear_event_filter", "Clear event filter",
-                   icon = icon("times"),
-                   style = "width: 100%;")
-    )
+    actionButton("clear_event_filter", "Clear event filter", icon = icon("times"),
+                 class = "geo-sidebar-link geo-clear-event")
   })
 
   # Deselect → clears the event filter.
@@ -3467,7 +3024,7 @@ server <- function(input, output, session) {
       if (length(input$selected_files) > 1) {
         paste0(game_name, "_tracks_", Sys.Date(), ".zip")
       } else {
-        selected_track_data <- track_data_rv()
+        selected_track_data <- dashboard_track()
         player_name <- gsub("\\s+", "_", selected_track_data$players)
         date_label <- substr(selected_track_data$createdAt, 1, 10)
         paste0(player_name, "_", date_label, ".json")
@@ -3549,20 +3106,19 @@ server <- function(input, output, session) {
   
   # 6. Select single file to view
   output$file_selector_ui <- renderUI({
-    req(filtered_choices_r())
-    
     choices_now <- filtered_choices_r()
+    if (!length(choices_now)) return(p("Select sessions to choose a reference.", class = "geo-muted"))
     selected_now <- current_single_player()
     
     pickerInput(
       "selected_data_file_all",
-      "Selected Players:",
+      "Reference session:",
       choices = choices_now,
       selected = selected_now,
       multiple = FALSE,
       options = list(
         `actions-box` = FALSE,
-        `live-search` = FALSE,
+        `live-search` = TRUE,
         `none-selected-text` = "Select a player",
         `width` = '100%',
         container = FALSE,
@@ -3601,6 +3157,8 @@ server <- function(input, output, session) {
       shiny::need(!is.null(d), "No data returned for selected track.")
     )
     
+    d <- normalize_dashboard_track(d)
+
     # apply VR correction patch
     if (!is.null(d$events)) {
       d$events <- fix_vr_distance_tasks(d$events)
@@ -3623,7 +3181,11 @@ server <- function(input, output, session) {
     datapaths <- input$uploaded_json_file$datapath
     
     lapply(datapaths, function(path) {
-      d <- jsonlite::fromJSON(path)
+      d <- tryCatch(jsonlite::fromJSON(path), error = function(e) {
+        showNotification("The uploaded file is not valid track JSON.", type = "error")
+        shiny::validate(shiny::need(FALSE, "The uploaded file is not valid track JSON."))
+      })
+      d <- normalize_dashboard_track(d)
       if (!is.null(d$events)) {
         d$events <- fix_vr_distance_tasks(d$events)
         d$events <- fix_direction_tasks(d$events)
@@ -3639,12 +3201,14 @@ server <- function(input, output, session) {
     req(input$selected_multiple_files)
     
     # Taking all selected IDs
-    sel <- input$selected_multiple_files
+    sel <- intersect(input$selected_multiple_files, filtered_choices_r())
     
     # Fetching the data for each selected track
     data_list <- lapply(sel, function(track_id) {
       url <- paste0(apiURL_rv(), "/track/", track_id)
       d <- fetch_games_data_from_server(url, accessToken_rv())
+      shiny::validate(shiny::need(!is.null(d), "No data returned for a selected track."))
+      d <- normalize_dashboard_track(d)
       if (!is.null(d$events)) {
         d$events <- fix_vr_distance_tasks(d$events)
         d$events <- fix_direction_tasks(d$events)
@@ -3654,7 +3218,7 @@ server <- function(input, output, session) {
     
     
     # updating track_data_rv to hold a list of all
-    track_data_rv(data_list)
+    # Reference metadata stays separate from comparison data.
     
     return(data_list)
   })
@@ -3665,6 +3229,7 @@ server <- function(input, output, session) {
   ### 9. UI: multiple file selector for comparison (tables, graphics, maps, photos)
   # UI for Compare Players - with select/deselect buttons
   output$file_selector_ui1 <- renderUI({
+    if (identical(dashboard_source(), "upload")) return(NULL)
     req(filtered_choices_r())
     
     choices_now <- filtered_choices_r()
@@ -3682,7 +3247,7 @@ server <- function(input, output, session) {
         multiple = TRUE,
         options = list(
           `actions-box` = FALSE,
-          `live-search` = FALSE,
+          `live-search` = TRUE,
           `none-selected-text` = "Select a player",
           `width` = '100%',
           container = FALSE,
@@ -3719,40 +3284,9 @@ server <- function(input, output, session) {
   
   
   ##### Filters for comparing Graphics starts
-  output$file_selector_ui2 <- renderUI({
-    req(filtered_choices_r())
-    
-    choices_now <- filtered_choices_r()
-    
-    cur <- isolate(input$selected_multiple_files)
-    selected_now <- intersect(cur, choices_now)
-    if (length(selected_now) == 0) selected_now <- choices_now
-    
-    tagList(
-      pickerInput(
-        "selected_multiple_files",
-        "Selected Players:",
-        choices = choices_now,
-        selected = selected_now,
-        multiple = TRUE,
-        options = list(
-          `actions-box` = FALSE,
-          `live-search` = FALSE,
-          `none-selected-text` = "Select a player",
-          `width` = '100%',
-          container = FALSE,
-          size = 10
-        )
-      )
-    )
-  })
-  
-  
-  
-  
-  
   ##### Filter for maps
   output$file_selector_ui3 <- renderUI({
+    if (identical(dashboard_source(), "upload")) return(p("Recorded route from imported JSON.", class = "geo-muted"))
     req(filtered_choices_r())
     
     choices_now <- filtered_choices_r()
@@ -3772,29 +3306,10 @@ server <- function(input, output, session) {
     }
     
     div(
-      style = "display: flex; gap: 18px; align-items: flex-end; flex-wrap: wrap;",
+      class = "geo-trajectory-toolbar",
       
       div(
-        style = "width: 300px;",
-        pickerInput(
-          "selected_data_file_map",
-          "Reference player / map details:",
-          choices = choices_now,
-          selected = selected_ref,
-          multiple = FALSE,
-          options = list(
-            `actions-box` = FALSE,
-            `live-search` = FALSE,
-            `none-selected-text` = "Select a player",
-            `width` = '100%',
-            container = FALSE,
-            size = 10
-          )
-        )
-      ),
-      
-      div(
-        style = "width: 330px;",
+        class = "geo-trajectory-picker",
         pickerInput(
           "selected_map_files",
           "Players shown as trajectories:",
@@ -3803,7 +3318,7 @@ server <- function(input, output, session) {
           multiple = TRUE,
           options = list(
             `actions-box` = TRUE,
-            `live-search` = FALSE,
+            `live-search` = TRUE,
             `none-selected-text` = "Select players for trajectories",
             `select-all-text` = "Select all",
             `deselect-all-text` = "Deselect all",
@@ -3820,39 +3335,16 @@ server <- function(input, output, session) {
           "visualize_trajectories_btn",
           "Visualize Trajectories",
           icon = icon("play"),
-          style = "height: 38px; white-space: nowrap; background-color: #0CD1E8; border-color: #0CD1E8; color: #000;"
+          class = "geo-play-button"
         )
       )
     )
   })
   
   ##### Filter for photos
-  output$file_selector_ui4 <- renderUI({
-    req(filtered_choices_r())
-    
-    choices_now <- filtered_choices_r()
-    selected_now <- current_single_player()
-    
-    pickerInput(
-      "selected_data_file_pictures",
-      "Selected Players: ",
-      choices = choices_now,
-      selected = selected_now,
-      multiple = FALSE,
-      options = list(
-        `actions-box` = FALSE,
-        `live-search` = FALSE,
-        `none-selected-text` = "Select a player",
-        `width` = '100%',
-        container = FALSE,
-        size = 10
-      )
-    )
-  })
-  
   #####Big table code
-  df_react <- reactiveVal()
-  
+  df_react <- reactiveVal(data.frame())
+
   # Keeps the selected "Show X entries" value when the All tasks table is rebuilt
   iris_data_page_length <- function(default = 10) {
     len <- suppressWarnings(as.integer(isolate(input$iris_data_page_length)))
@@ -3869,12 +3361,273 @@ server <- function(input, output, session) {
     len
   }
   
-  observeEvent(list(current_single_player(), num_value_num()), {
+  # Shared presentation data for account tracks and standalone uploads.
+  dashboard_track <- reactive({
+    if (identical(dashboard_source(), "upload")) {
+      return(uploaded_json()[[1]])
+    }
+    choices <- choices_rv()
+    selected <- input$selected_files
+    if (!length(selected) || !length(choices) || !any(selected %in% choices)) return(NULL)
+    loaded_json()[[1]]
+  })
+  dashboard_summary <- reactive({ task_summary(dashboard_track()) })
+  dashboard_generation <- reactiveVal(0L)
+
+  dashboard_table_data <- function(sm) {
+    if (!nrow(sm)) return(data.frame(Type = character(), Assignment = character(), Answer = character(),
+      `Time (s)` = numeric(), Tries = integer(), `Viewing dir. (°)` = character(),
+      `Final view dir. (°)` = character(), `Pointing dir. (°)` = character(),
+      `Rotation (°)` = character(), `Final answer (°)` = character(),
+      `Error (°/m)` = character(), check.names = FALSE))
+    df <- data.frame(
+      Type = pretty_task_type_vec(sm$task_type), Assignment = sm$assignment,
+      Answer = sm$answer_txt, `Time (s)` = sm$time_s, Tries = sm$tries,
+      `Viewing dir. (°)` = format_bearing_deg(sm$viewing_direction),
+      `Final view dir. (°)` = format_bearing_deg(sm$final_viewing_direction),
+      `Pointing dir. (°)` = format_bearing_deg(sm$pointing_direction),
+      `Rotation (°)` = format_angle_deg(sm$rotation_angle),
+      `Final answer (°)` = format_bearing_deg(sm$final_answer_direction),
+      `Error (°/m)` = sm$error_txt, check.names = FALSE, stringsAsFactors = FALSE
+    )
+    info <- sm$category %in% "info"
+    df$Answer[info] <- NA_character_
+    df$Tries[info] <- 0L
+    df[info, intersect(c(advanced_direction_cols, "Error (°/m)"), names(df))] <- NA_character_
+    df
+  }
+
+  dashboard_task_rows <- function(df, selected = NULL, type = "__all__") {
+    rows <- seq_len(nrow(df))
+    if (length(selected)) {
+      ids <- suppressWarnings(as.integer(selected))
+      rows <- rows[rows %in% ids[!is.na(ids)]]
+    }
+    if (length(type) && !identical(type, "__all__") && length(rows)) {
+      rows <- rows[df$Type[rows] %in% type]
+    }
+    rows
+  }
+  filtered_task_rows <- reactive({
+    req(df_react())
+    dashboard_task_rows(df_react(), input$selected_task_ids, input$dashboard_task_type)
+  })
+  filtered_df <- reactive({ df_react()[filtered_task_rows(), , drop = FALSE] })
+
+  observeEvent(dashboard_track(), {
+    sm <- dashboard_summary()
+    df_react(dashboard_table_data(sm))
+    dashboard_generation(isolate(dashboard_generation()) + 1L)
+    types <- if (nrow(sm)) unique(pretty_task_type_vec(sm$task_type)) else character(0)
+    prev <- isolate(input$dashboard_task_type)
+    updateSelectInput(session, "dashboard_task_type", choices = c("All types" = "__all__", sort(types)),
+                      selected = if (length(prev) && prev %in% types) prev else "__all__")
+    if (nrow(sm)) {
+      cur <- isolate(num_value_num())
+      if (length(cur) != 1 || is.na(cur) || !cur %in% sm$taskNo) cur <- 1L
+      update_main_task_pickers(session, dashboard_track(), nrow(sm), cur)
+    }
+  }, ignoreNULL = FALSE, priority = 20)
+
+  output$dashboard_authenticated <- renderText({ isTRUE(nzchar(accessToken_rv())) })
+  output$dashboard_is_upload <- renderText({ identical(dashboard_source(), "upload") })
+  output$dashboard_has_track <- renderText({ !is.null(dashboard_track()) })
+  for (id in c("dashboard_authenticated", "dashboard_is_upload", "dashboard_has_track")) {
+    outputOptions(output, id, suspendWhenHidden = FALSE)
+  }
+  output$dashboard_import_name <- renderText({
+    if (identical(dashboard_source(), "upload")) input$uploaded_json_file$name else ""
+  })
+  output$dashboard_session_count <- renderUI({
+    n <- length(intersect(input$selected_files, choices_rv()))
+    div(class = "geo-session-count", paste(n, if (n == 1) "session selected" else "sessions selected"))
+  })
+
+  dashboard_player_label <- function(track) {
+    players <- as.character(unlist(track$players, use.names = FALSE))
+    players <- players[!is.na(players) & nzchar(players)]
+    if (length(players)) paste(players, collapse = ", ") else "Unnamed session"
+  }
+  output$dashboard_context <- renderUI({
+    tr <- dashboard_track()
+    uploaded <- identical(dashboard_source(), "upload")
+    game <- if (uploaded) "Imported track" else if (!is.null(tr)) get_selected_game_name() else "Session overview"
+    ev <- events_choices_rv()
+    event_name <- names(ev)[ev %in% input$selected_event]
+    if (!length(event_name) || !isTRUE(event_is_active())) event_name <- "Game analytics"
+    div(class = "geo-context",
+      div(tags$span(class = "geo-eyebrow", if (uploaded) "Local JSON analysis" else event_name[1]),
+          h1(game), p(if (is.null(tr)) "Choose a session to view its tasks and recorded route." else
+            paste0("Reference session: ", dashboard_player_label(tr), if (uploaded) " \u00b7 imported JSON" else
+              paste0(" \u00b7 ", length(input$selected_files), " sessions selected")))),
+      if (!is.null(tr)) tags$span(class = "geo-context-label", if (uploaded) "Imported JSON" else "Reference session")
+    )
+  })
+
+  dashboard_session_metrics <- function(track, sm = task_summary(track)) {
+    if (is.null(track)) return(list(tasks = NA_integer_, correct = NA_integer_, duration = NA_real_, distance = NA_real_))
+    ts <- parse_ts(track$events$timestamp)
+    ts <- ts[!is.na(ts)]
+    duration <- if (length(ts) >= 2) as.numeric(difftime(max(ts), min(ts), units = "secs")) else NA_real_
+    wp <- track$waypoints
+    distance <- NA_real_
+    if (!is.null(wp$position$coords)) {
+      lon <- num(wp$position$coords$longitude)
+      lat <- num(wp$position$coords$latitude)
+      valid <- is.finite(lon) & is.finite(lat)
+      wt <- parse_ts(wp$timestamp)
+      if (length(wt) == length(valid) && sum(valid & !is.na(wt)) >= 2) {
+        wt <- wt[valid & !is.na(wt)]
+        # Reuse the canonical speed/accuracy filter; never turn absent GPS into zero.
+        distance <- distance_travelled_between(track, min(wt), max(wt))
+      }
+    }
+    list(tasks = nrow(sm), correct = sum(sm$status == "Correct", na.rm = TRUE), duration = duration, distance = distance)
+  }
+  dashboard_duration_text <- function(seconds) {
+    if (!length(seconds) || !is.finite(seconds) || seconds < 0) return("Not recorded")
+    seconds <- floor(seconds)
+    if (seconds >= 3600) sprintf("%dh %02dm", seconds %/% 3600, (seconds %% 3600) %/% 60) else
+      sprintf("%dm %02ds", seconds %/% 60, seconds %% 60)
+  }
+  output$dashboard_summaries <- renderUI({
+    m <- dashboard_session_metrics(dashboard_track(), dashboard_summary())
+    card <- function(label, value, note, glyph) div(class = "geo-metric",
+      div(class = "geo-metric-label", icon(glyph), label),
+      div(class = "geo-metric-value", value), div(class = "geo-metric-note", note))
+    div(class = "geo-summary-grid",
+      card("Tasks recorded", if (is.na(m$tasks)) "\u2014" else m$tasks, "All tasks in the reference session", "list-check"),
+      card("Score", if (is.na(m$tasks)) "\u2014" else paste0(m$correct, "/", m$tasks), "Includes viewed information tasks", "circle-check"),
+      card("Session time", dashboard_duration_text(m$duration), "First to last recorded event", "clock"),
+      card("Distance", if (!is.finite(m$distance)) "Not recorded" else if (m$distance >= 1000) sprintf("%.2f km", m$distance / 1000) else sprintf("%.0f m", m$distance),
+           "Recorded route \u00b7 speed and GPS quality filter", "route")
+    )
+  })
+
+  output$task_id_selector <- renderUI({
+    df <- df_react()
+    ids <- as.character(seq_len(nrow(df)))
+    prev <- as.character(isolate(input$selected_task_ids))
+    selected <- intersect(prev, ids)
+    if (!length(selected)) selected <- ids
+    pickerInput("selected_task_ids", "Tasks", choices = ids, selected = selected, multiple = TRUE,
+      options = list(`actions-box` = TRUE, `live-search` = TRUE, `none-selected-text` = "All tasks", size = 10))
+  })
+  output$iris_data <- renderDT({
+    req(df_react())
+    rows <- filtered_task_rows()
+    df <- apply_assignment_display_limit(filtered_df())
+    if (!advanced_direction_enabled()) df <- drop_advanced_direction_cols(df)
+    # Task number and occurrence key remain attached when DT sorts/searches rows.
+    sm <- dashboard_summary()
+    df <- data.frame(Task = rows, df, `.source` = rep(dashboard_generation(), length(rows)),
+                     `.task_key` = if (length(rows)) sm$task_key[rows] else character(0), check.names = FALSE)
+    visible <- input$dashboard_columns
+    optional <- c("Assignment", "Answer", "Time (s)", "Tries", "Error (°/m)")
+    if (is.null(visible)) visible <- character(0)
+    hidden <- which(names(df) %in% c(setdiff(optional, visible), ".source", ".task_key")) - 1L
+    render_result <- DT::JS("function(data, type, row) {
+      if (type !== 'display') return data;
+      var esc = function(s) { return $('<div>').text(s == null ? '' : s).html(); };
+      if (row[1] === 'Information') return '<span class=\"geo-result geo-result-viewed\">Viewed</span>';
+      if (data == null || data === '') return '<span class=\"geo-result\">Not recorded</span>';
+      var match = String(data).match(/^(Correct|Incorrect|Not submitted|Target not reached)(?:\\s+(.*))?$/);
+      if (!match) return esc(data);
+      var color = match[1] === 'Correct' ? 'correct' : (match[1] === 'Incorrect' || match[1] === 'Target not reached' ? 'incorrect' : '');
+      return '<span class=\"geo-result geo-result-' + color + '\">' + esc(match[1]) + '</span>' + (match[2] ? '<span class=\"geo-answer-value\">' + esc(match[2]) + '</span>' : '');
+    }")
+    DT::datatable(df, rownames = FALSE, colnames = replace(names(df), names(df) == "Answer", "Result"),
+      escape = setdiff(names(df), c("Assignment", "Answer")), class = "compact hover",
+      selection = list(mode = "single", selected = which(rows == isolate(num_value_num())), target = "row"),
+      options = list(pageLength = iris_data_page_length(), lengthMenu = c(10, 25, 50, 100),
+        ordering = TRUE, autoWidth = FALSE, scrollX = TRUE,
+        createdRow = DT::JS("function(row, data) { row.tabIndex = 0; row.setAttribute('aria-label', 'Inspect task ' + data[0]); }"),
+        language = list(search = "Search tasks:", emptyTable = "No tasks match these filters."),
+        columnDefs = list(list(visible = FALSE, targets = hidden),
+                          list(render = render_result, targets = which(names(df) == "Answer") - 1L))),
+      callback = DT::JS("table.on('length.dt', function(e, settings, len) {
+        Shiny.setInputValue('iris_data_page_length', len, {priority: 'event'});
+      });
+      table.on('click', 'tbody tr', function() {
+        var row = table.row(this).data();
+        if (!row) return;
+        Shiny.setInputValue('dashboard_task_clicked', {task: Number(row[0]), source: Number(row[row.length - 2]), key: row[row.length - 1]}, {priority: 'event'});
+      });
+      table.on('keydown', 'tbody tr', function(e) {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $(this).trigger('click'); }
+      });")
+    )
+  })
+  # Updating the preview must not rebuild DT and discard its search, sort or page.
+  observeEvent(list(num_value_num(), input$dashboard_tabs), {
+    if (!identical(input$dashboard_tabs, "All tasks")) return()
+    rows <- isolate(filtered_task_rows())
+    DT::selectRows(DT::dataTableProxy("iris_data", session = session), which(rows == num_value_num()))
+  }, ignoreInit = TRUE)
+  observeEvent(input$dashboard_task_clicked, {
+    click <- input$dashboard_task_clicked
+    sm <- dashboard_summary()
+    task <- suppressWarnings(as.integer(click$task))
+    if (length(task) != 1 || is.na(task) || !task %in% sm$taskNo ||
+        !identical(as.integer(click$source), dashboard_generation()) || !identical(click$key, sm$task_key[task])) return()
+    for (id in c("num_value", "num_value_pictures", "num_value_comparison", "num_value_Statistics")) {
+      updatePickerInput(session, id, selected = as.character(task))
+    }
+  })
+  observeEvent(input$dashboard_open_map, { updateTabsetPanel(session, "dashboard_tabs", selected = "Map") })
+  dashboard_selected_task <- reactive({
+    sm <- dashboard_summary()
+    no <- num_value_num()
+    if (!nrow(sm) || length(no) != 1 || is.na(no) || !no %in% sm$taskNo) return(NULL)
+    sm[sm$taskNo == no, , drop = FALSE]
+  })
+  output$dashboard_task_detail <- renderUI({
+    task <- dashboard_selected_task()
+    if (is.null(task)) return(tagList(h2("Task preview"), p("Choose a recorded task to see its details.")))
+    info <- identical(task$category, "info")
+    status <- if (info) "Viewed" else if (is.na(task$status)) "Not recorded" else task$status
+    color <- if (info) "viewed" else if (identical(status, "Correct")) "correct" else if (status %in% c("Incorrect", "Target not reached")) "incorrect" else ""
+    value <- function(x) if (!length(x) || is.na(x) || !nzchar(as.character(x))) "Not recorded" else as.character(x)
+    metric <- function(label, val) div(tags$dt(label), tags$dd(val))
+    tagList(h2(paste("Task", task$taskNo)), p(class = "geo-detail-type", pretty_task_type(task$task_type)),
+      tags$span(class = paste0("geo-result geo-result-", color), status),
+      p(value(task$assignment)),
+      if (!info && !is.na(task$answer_txt) && task$answer_txt != task$status) p("Answer: ", task$answer_txt),
+      tags$dl(class = "geo-detail-metrics",
+        metric("Time", dashboard_duration_text(task$time_s)), metric("Attempts", value(task$tries)),
+        metric("Error", if (info) "Not applicable" else value(task$error_txt)),
+        metric("Distance", if (!is.finite(task$dist_travel_m)) "Not recorded" else sprintf("%.0f m", task$dist_travel_m)))
+    )
+  })
+  dashboard_task_has_map <- reactive({
+    task <- dashboard_selected_task()
+    if (is.null(task) || task$category %in% "info") return(FALSE)
+    map <- map_rv()
+    if (is.null(map)) return(FALSE)
+    calls <- vapply(map$x$calls, function(call) call$method, character(1))
+    has_geometry <- any(calls %in% c("addMarkers", "addCircleMarkers", "addCircles", "addPolylines", "addPolygons"))
+    track <- dashboard_track()
+    env <- track$events$task$virEnvType[task$start_idx]
+    has_geometry || (length(env) == 1 && !is.na(env) && nzchar(env))
+  })
+  output$dashboard_task_has_map <- renderText({ dashboard_task_has_map() })
+  outputOptions(output, "dashboard_task_has_map", suspendWhenHidden = FALSE)
+  output$dashboard_task_map_message <- renderText({
+    task <- dashboard_selected_task()
+    if (!is.null(task) && task$category %in% "info") "Information task \u00b7 no map answer" else "No recorded map data for this task."
+  })
+  output$dashboard_task_map <- renderLeaflet({
+    req(dashboard_task_has_map(), map_rv())
+    map_rv()
+  })
+
+  observeEvent(list(current_single_player(), num_value_num(), dashboard_source()), {
+    req(identical(dashboard_source(), "server"))
     req(current_single_player())
     req(num_value_num() != 0 && num_value_num() > 0)
-    
+
     data <- loaded_json()  # load selected JSON
-    
+
     if (is.null(data) || length(data) == 0) {
       showNotification("No data found for selected file.", type = "error")
       return()
@@ -3897,23 +3650,23 @@ server <- function(input, output, session) {
     pict_quest <- data[[1]]$events$task$question$photo
     ans_type <- data[[1]]$events$task$answer$type    #decides how to format the “Answer” column.
     
-    for (j in seq_len(length(id) - 1)) {
-      if ((!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
-        correct_flag <- data[[1]]$events$answer$correct[j]
+    for (j in seq_len(max(length(id) - 1L, 0L))) {
+      if (isTRUE(!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
+        correct_flag <- safe_scalar(data[[1]]$events$answer$correct[j])
         
         ans_value <- NA  # Default
         
-        if (ans_type[j] == "TEXT") {
+        if (isTRUE(ans_type[j] == "TEXT")) {
           ans_text <- data[[1]]$events$answer$text[j]
           if (!is.na(correct_flag)) {
             ans_value <- paste(ifelse(correct_flag == "TRUE", "Correct", "Incorrect"), ans_text)
           }
-        } else if (ans_type[j] == "MULTIPLE_CHOICE_TEXT") {
+        } else if (isTRUE(ans_type[j] == "MULTIPLE_CHOICE_TEXT")) {
           choice_val <- data[[1]]$events$answer$selectedChoice$value[j]
           if (!is.na(correct_flag)) {
             ans_value <- paste(ifelse(correct_flag == "TRUE", "Correct", "Incorrect"), choice_val)
           }
-        } else if (ans_type[j] == "NUMBER") {
+        } else if (isTRUE(ans_type[j] == "NUMBER")) {
           num_val <- data[[1]]$events$answer$numberInput[j]
           if (!is.na(correct_flag)) {
             ans_value <- paste(ifelse(correct_flag == "TRUE", "Correct", "Incorrect"), num_val)
@@ -3938,8 +3691,8 @@ server <- function(input, output, session) {
     
     dist <- list()
     
-    for (j in 1:(length(id) - 1)) {
-      if ((!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
+    for (j in seq_len(max(length(id) - 1L, 0L))) {
+      if (isTRUE(!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
         dist <- append(dist, format_task_error(data[[1]]$events, j))
       }
     }
@@ -3955,8 +3708,8 @@ server <- function(input, output, session) {
     tps <- data[[1]]$events$timestamp
     time1 <- as.POSIXct(tps[1], format = "%Y-%m-%dT%H:%M:%OS",tz = "UTC")
     tmp <- list()
-    for (j in 1:(length(id) - 1)) {
-      if ((!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
+    for (j in seq_len(max(length(id) - 1L, 0L))) {
+      if (isTRUE(!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
         time2 <- as.POSIXct(tps[j], format = "%Y-%m-%dT%H:%M:%OS",tz = "UTC")
         tmp <- append(tmp, paste(floor(as.numeric(time2 - time1, units = "secs")),"s"))
         time1 <- as.POSIXct(tps[j+1], format = "%Y-%m-%dT%H:%M:%OS",tz = "UTC")
@@ -3967,11 +3720,11 @@ server <- function(input, output, session) {
     #Computing tries number for each task
     tries = 0
     try <- list()
-    for (j in 1:(length(id) - 1)) {
+    for (j in seq_len(max(length(id) - 1L, 0L))) {
       if (ev[j] == "ON_OK_CLICKED") { #Answer when the player clicks on OK
         tries <- tries + 1
       }
-      if ((!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
+      if (isTRUE(!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
         try <- append(try, tries)
         tries = 0
       }
@@ -4028,12 +3781,15 @@ server <- function(input, output, session) {
     
     
     #Recovering answers position for the map
-    for (i in 1:(length(id)-1)) {
+    for (i in seq_len(max(length(id) - 1L, 0L))) {
       if (!is.na(cat_task[i])) {
         if ((cat_task[i] == "nav") && (cou == num_value_num())) {
-          long <- append(long, coor[[i]][1])
-          lati <- append(lati, coor[[i]][2])
-          accuracy_rad <- accuracy_radius[[i]]
+          xy <- coordinate_pair_at(coor, i)
+          if (!is.null(xy)) {
+            long <- append(long, xy[1])
+            lati <- append(lati, xy[2])
+          }
+          accuracy_rad <- get_task_accuracy(data[[1]]$events, i, kind = "nav")
           t <- type_task[i]
         }
         if ((cat_task[i] == "info") && (cou == num_value_num())) {
@@ -4043,11 +3799,17 @@ server <- function(input, output, session) {
       }
       if (!is.na(type_task[i])) { #target point for theme task
         if ((type_task[i] == "theme-loc") && (ev[i] == "ON_OK_CLICKED") && (cou == num_value_num())) {
-          lng_targ <- append(lng_targ, targ[[i]][1])
-          lat_targ <- append(lat_targ, targ[[i]][2])
-          lng_true <- append(lng_true, coor_true$longitude[[i]])
-          lat_true <- append(lat_true, coor_true$latitude[[i]])
-          accuracy_rad <- accuracy_radius[[i]]
+          xy <- get_click_lonlat(data[[1]]$events, i)
+          if (all(is.finite(xy))) {
+            lng_targ <- append(lng_targ, xy[1])
+            lat_targ <- append(lat_targ, xy[2])
+          }
+          xy <- c(coor_true$longitude[i], coor_true$latitude[i])
+          if (all(is.finite(xy))) {
+            lng_true <- append(lng_true, xy[1])
+            lat_true <- append(lat_true, xy[2])
+          }
+          accuracy_rad <- get_task_accuracy(data[[1]]$events, i, kind = "nav")
           t <- type_task[i]
         }
         if ((type_task[i] == "theme-loc") && (cou == num_value_num())) { #Always having the task type shown for theme-localisation
@@ -4140,22 +3902,22 @@ server <- function(input, output, session) {
             }
           }
         }
-        if ((type_task[i] == "free") && (cou == num_value_num()) && length(drawing_point_lat) != 0 && !is.na(drawing_point_lat[[i]]) && ans_type[[i]] == "DRAW") {
+        if ((type_task[i] == "free") && (cou == num_value_num()) && length(drawing_point_lat) != 0 && !is.na(drawing_point_lat[[i]]) && isTRUE(ans_type[[i]] == "DRAW")) {
           dr_point_lat <- append(dr_point_lat, drawing_point_lat[[i]])
           dr_point_lng <- append(dr_point_lng, drawing_point_lng[[i]])
           t <- type_task[i]
         }
-        if ((type_task[i] == "free") && (cou == num_value_num()) && (length(drawing_point_lat) == 0 || is.na(drawing_point_lat[[i]])) && ans_type[[i]] == "DRAW") { #correcting error to visualize draw
+        if ((type_task[i] == "free") && (cou == num_value_num()) && (length(drawing_point_lat) == 0 || is.na(drawing_point_lat[[i]])) && isTRUE(ans_type[[i]] == "DRAW")) { #correcting error to visualize draw
           mr <- TRUE
           t <- type_task[i]
         }
-        if ((type_task[i] == "free") && (cou == num_value_num()) && ans_type[[i]] != "DRAW") {
+        if ((type_task[i] == "free") && (cou == num_value_num()) && !isTRUE(ans_type[[i]] == "DRAW")) {
           mr <- TRUE
           t <- type_task[i]
         }
         # Capture the final stored drawing geometry for the selected DRAW task.
         if (has_drawing_col && (type_task[i] == "free") && (cou == num_value_num()) &&
-            ans_type[[i]] == "DRAW" && ev[i] == "ON_OK_CLICKED") {
+            isTRUE(ans_type[[i]] == "DRAW") && ev[i] == "ON_OK_CLICKED") {
           feats_i <- try(data[[1]]$events$answer$drawing$features[[i]], silent = TRUE)
           if (!inherits(feats_i, "try-error") && is.data.frame(feats_i) && nrow(feats_i) > 0) {
             drawing_feats <- feats_i
@@ -4166,7 +3928,7 @@ server <- function(input, output, session) {
       if (is.na(type_task[i]) && (i != 1) && (cou == num_value_num())) { #na task
         mr <- TRUE
       }
-      if ((!is.na(id[i]) && (i != 1) && (id[i] != id[i + 1])) || i == (length(id) - 1)) {
+      if (isTRUE(!is.na(id[i]) && (i != 1) && (id[i] != id[i + 1])) || i == (length(id) - 1)) {
         cou <- cou + 1
       }
     }
@@ -4176,9 +3938,11 @@ server <- function(input, output, session) {
     traj_lat <- list()
     accuracy <- list()
     task_number <- data[[1]]$waypoints$taskNo #Task number
-    for (i in 1:length(task_number)) {
+    for (i in seq_along(task_number)) {
       if (!is.null(task_number[i])) {
-        if (task_number[i] == num_value_num()) {
+        if (isTRUE(task_number[i] == num_value_num()) &&
+            all(is.finite(c(data[[1]]$waypoints$position$coords$longitude[i],
+                            data[[1]]$waypoints$position$coords$latitude[i])))) {
           traj_lng <- append(traj_lng, data[[1]]$waypoints$position$coords$longitude[i])
           traj_lat <- append(traj_lat, data[[1]]$waypoints$position$coords$latitude[i])
           if (length(data[[1]]$waypoints$position$coords$accuracy) != 0) {
@@ -4203,10 +3967,10 @@ server <- function(input, output, session) {
     time_waypoints <- list()
     tps_waypoints <- data[[1]]$waypoints$timestamp
     
-    for (k in 1:length(tmp)) {
+    for (k in seq_along(tmp)) {
       if (tmp[[k]] == "0 s") {
-        for (i in 1:length(task_number)) {
-          if (task_number[i] == k) {
+        for (i in seq_along(task_number)) {
+          if (isTRUE(task_number[i] == k)) {
             time_waypoints <- append(time_waypoints, tps_waypoints[[i]])
           }
         }
@@ -4236,7 +4000,7 @@ server <- function(input, output, session) {
           lat_2 <- traj_lat[[k+1]][1]
           lng_2 <- traj_lng[[k+1]][1]
           d <- R * acos(sin(lat_1*deg_to_rad)*sin(lat_2*deg_to_rad) + cos(lat_1*deg_to_rad)*cos(lat_2*deg_to_rad)*cos((lng_2 - lng_1)*deg_to_rad))
-          if (accuracy[[k]] >= 20) {
+          if (isTRUE(accuracy[[k]] >= 20)) {
             traj_lat[k] <- traj_lat[k+1] #Filter GPS coordinate errors
             traj_lng[k] <- traj_lng[k+1]
           }
@@ -4247,7 +4011,7 @@ server <- function(input, output, session) {
     rg <- cbind(unlist(typ), unlist(cons), unlist(ans), unlist(tmp), unlist(try), unlist(dist))
     #print(rg)
     
-    for (i in 1:(nrow(rg))) {
+    for (i in seq_len(NROW(rg))) {
       if (((!is.na(rg[i,1]) && rg[i,1] == "nav-arrow") || (!is.na(rg[i,1]) && rg[i,1] == "nav-text")
            || (!is.na(rg[i,1]) && rg[i,1] == "nav-photo")) && rg[i,4] != "0 s" && is.na(rg[i,3])) {
         rg[i,3] <- "Correct"
@@ -4260,271 +4024,7 @@ server <- function(input, output, session) {
       }
     }
     
-    # Build the main table from the same canonical source used by "Save all to CSV"
-    sm <- task_summary(data[[1]])
-    
-    df <- data.frame(
-      Type = pretty_task_type_vec(sm$task_type),
-      Assignment = sm$assignment,
-      Answer = sm$answer_txt,
-      `Time (s)` = sm$time_s,
-      Tries = sm$tries,
-      `Viewing dir. (°)` = format_bearing_deg(sm$viewing_direction),
-      `Final view dir. (°)` = format_bearing_deg(sm$final_viewing_direction),
-      `Pointing dir. (°)` = format_bearing_deg(sm$pointing_direction),
-      `Rotation (°)` = format_angle_deg(sm$rotation_angle),
-      `Final answer (°)` = format_bearing_deg(sm$final_answer_direction),
-      `Error (°/m)` = sm$error_txt,
-      
-      row.names = NULL,
-      check.names = FALSE,
-      stringsAsFactors = FALSE
-    )
-    
-    info_mask <- tolower(trimws(df$Type)) == "information"
-    df$Answer[info_mask] <- NA_character_
-    df$Tries[info_mask] <- 0
-    df[["Viewing dir. (°)"]][info_mask] <- NA_character_
-    df[["Final view dir. (°)"]][info_mask] <- NA_character_
-    df[["Pointing dir. (°)"]][info_mask] <- NA_character_
-    df[["Rotation (°)"]][info_mask] <- NA_character_
-    df[["Final answer (°)"]][info_mask] <- NA_character_
-    df[["Error (°/m)"]][info_mask] <- NA_character_
-    # For dashboard display: show max 2-line information text, full text on hover
-    df <- apply_assignment_display_limit(df)
-    
-    
-    
-    
-    
-    #Name of the player
-    #print(data[[1]]$players[1])
-    output$player_name <- renderText({
-      paste("Player: ", data[[1]]$players[1], sep = "")
-    })
-    
-    
-    #Overall score
-    good <- sum(sm$status == "Correct", na.rm = TRUE)
-    total <- nrow(sm)
-    
-    
-    
-    output$overall_score <- renderText({
-      paste("Overall score: ", good, "/", total, sep = "")
-    })
-    
-    output$player_info_box <- renderUI({
-      req(data[[1]]$players[1])
-      
-      div(id = "inlineDiv",
-          style = "margin-bottom: 20px; border: 1px solid #ccc; padding: 10px; border-radius: 5px; background-color: #f9f9f9;",
-          h5(textOutput("player_name")),
-          h5(textOutput("overall_score"))
-      )
-    })
-    
-    df_react(df)
-    
-    #PREVIOUSLY OBSERVE BUTTONS - PICKER INPUT 
-    # observe({
-    #   req(df_react())
-    #   choices <- seq_len(nrow(df_react()))
-    #   updatePickerInput(session, "num_value_comparison", choices = choices, selected = input$num_value_comparison)
-    # })
-    
-    
-    
-    ###############----------Task IDs updation all 4 STARTS-------------################
-    observeEvent(df_react(), {
-      df <- df_react()
-      if (is.null(df) || nrow(df) == 0) return()
-      
-      n <- nrow(df)
-      cur <- suppressWarnings(as.integer(input$num_value))
-      if (is.na(cur) || cur < 1 || cur > n) cur <- 1
-      
-      update_main_task_pickers(
-        session = session,
-        track = data[[1]],
-        n_tasks = n,
-        selected = cur
-      )
-    })
-    ###############----------Task IDs updation all 4 STARTS-------------################
-    
-    
-    #all_ids <- c("num_value", "num_value_map", "num_value_pictures", "num_value_comparison", "num_value_Statistics")
-    #NOTE : num_value is the important variable, all of the other stored elements are triggered because of 'num_value'
-    
-    output$iris_data <- renderDT({
-      df_react()
-    })
-    
-    
-    
-    
-    #-----------all tasks - id checkbox filter starts --------------------------------
-    output$task_id_selector <- renderUI({
-      req(df_react())
-      df <- df_react()
-      
-      task_ids <- as.character(seq_len(nrow(df)))   # row numbers used in All tasks tab
-      
-      # preserve previous selection when switching player
-      prev_selected <- isolate(input$selected_task_ids)
-      prev_selected <- as.character(prev_selected)
-      
-      # keep only those that still exist for the newly selected player
-      selected_ids <- intersect(prev_selected, task_ids)
-      
-      # if nothing valid remains, fall back to all
-      if (length(selected_ids) == 0) {
-        selected_ids <- task_ids
-      }
-      
-      tagList(
-        pickerInput(
-          "selected_task_ids",
-          "Filter by Task ID:",
-          choices = task_ids,
-          selected = selected_ids,
-          multiple = TRUE,
-          options = list(
-            `actions-box` = TRUE,
-            `live-search` = FALSE,
-            `none-selected-text` = "Filter by Task ID:",
-            `width` = '100%',
-            container = FALSE,
-            size = 10
-          )
-        )
-      )
-    })
-    
-    # Filtered data
-    filtered_df <- reactive({
-      req(df_react())
-      df <- df_react()
-      
-      if (is.null(input$selected_task_ids) || length(input$selected_task_ids) == 0) {
-        return(df)   # if none selected, show all
-      }
-      
-      df[input$selected_task_ids, , drop = FALSE]   # subset by row numbers
-    })
-    
-    # Show table
-    output$iris_data <- renderDT({
-      df_show <- filtered_df()
-      
-      if (!advanced_direction_enabled()) {
-        df_show <- drop_advanced_direction_cols(df_show)
-      }
-      
-      DT::datatable(
-        df_show,
-        escape = setdiff(names(df_show), "Assignment"),
-        class = "compact stripe hover",
-        options = list(
-          pageLength = iris_data_page_length(),
-          lengthMenu = c(10, 25, 50, 100),
-          ordering = FALSE,
-          autoWidth = FALSE
-        ),
-        callback = DT::JS("
-      table.on('length.dt', function(e, settings, len) {
-        Shiny.setInputValue('iris_data_page_length', len, {priority: 'event'});
-      });
-    ")
-      )
-    })
-    
-    #---------logic for select/deselect all starts ----------------------
-    observeEvent(input$select_all_tasks, {
-      req(df_react())
-      task_ids <- seq_len(nrow(df_react()))
-      updateSelectInput(session, "selected_task_ids", selected = task_ids)
-    })
-    
-    observeEvent(input$deselect_all_tasks, {
-      updateSelectInput(session, "selected_task_ids", selected = character(0))
-    })
-    
-    #---------logic for select/deselect all ends ----------------------
-    
-    #---------task filter id for all tasks ends------------------------------------
-    
-    
     # Download filtered big table
-    output$save_data <- downloadHandler(
-      filename = function() {
-        player_name <- "player"
-        
-        tr <- track_data_rv()
-        if (!is.null(tr) && !is.list(tr[[1]]) && !is.null(tr$players) && length(tr$players) > 0) {
-          player_name <- as.character(tr$players[1])
-        } else if (!is.null(tr) && !is.null(tr$players) && length(tr$players) > 0) {
-          player_name <- as.character(tr$players[1])
-        }
-        
-        player_name <- gsub("[^A-Za-z0-9_\\-]", "_", player_name)
-        paste0(player_name, "_", Sys.Date(), ".csv")
-      },
-      
-      content = function(file) {
-        df_out <- filtered_df()
-        
-        if (!advanced_direction_enabled()) {
-          df_out <- drop_advanced_direction_cols(df_out)
-        }
-        
-        if (!is.null(df_out) && nrow(df_out) > 0) {
-          if ("Assignment" %in% names(df_out)) {
-            df_out$Assignment <- html_visible_text(df_out$Assignment)
-          }
-          if ("Answer" %in% names(df_out)) {
-            df_out$Answer <- clean_export_text(df_out$Answer)
-          }
-        }
-        
-        # get game name
-        games_map <- games_choices_rv()
-        game_name <- NA_character_
-        
-        if (!is.null(games_map) && length(games_map) > 0 && !is.null(input$selected_games)) {
-          idx <- which(games_map == input$selected_games)
-          if (length(idx) > 0) {
-            game_name <- names(games_map)[idx[1]]
-          }
-        }
-        
-        if (is.null(game_name) || length(game_name) == 0 || is.na(game_name)) {
-          game_name <- "Unknown Game"
-        }
-        
-        # get player name
-        player_name <- NA_character_
-        tr <- track_data_rv()
-        if (!is.null(tr) && !is.null(tr$players) && length(tr$players) > 0) {
-          player_name <- as.character(tr$players[1])
-        }
-        
-        # prepend columns
-        if (!is.null(df_out) && nrow(df_out) > 0) {
-          df_out <- data.frame(
-            Game = game_name,
-            Player = player_name,
-            df_out,
-            check.names = FALSE,
-            stringsAsFactors = FALSE
-          )
-        }
-        
-        write_csv_excel_utf8(df_out, file, na = "NA")
-      }
-    )
-    
     ########NEW DOWNLOAD BUTTON FOR ALL TASKS BIG TABLE - 'SAVE ALL TO CSV' starts########
     output$save_all_data <- downloadHandler(
       filename = function() {
@@ -4579,7 +4079,7 @@ server <- function(input, output, session) {
           df_one <- build_big_table_export_df(tr)
           if (nrow(df_one) == 0) next
           
-          df_one <- apply_task_id_filter_export(df_one, selected_task_ids_now)
+          df_one <- df_one[dashboard_task_rows(df_one, selected_task_ids_now, input$dashboard_task_type), , drop = FALSE]
           if (nrow(df_one) == 0) next
           
           if (!advanced_direction_enabled()) {
@@ -4648,21 +4148,7 @@ server <- function(input, output, session) {
     
     
     
-    output$save_big_table <- renderUI({
-      req(filtered_df())
-      
-      if (nrow(filtered_df()) > 0) {
-        tagList(
-          div(
-            style = "display: flex; gap: 10px; align-items: center; flex-wrap: wrap;",
-            downloadButton('save_data', 'Save to CSV'),
-            if (!is.null(input$selected_files) && length(input$selected_files) > 0) {
-              downloadButton('save_all_data', 'Save All Players')
-            }
-          )
-        )
-      }
-    })
+
     
     
     
@@ -5190,121 +4676,15 @@ server <- function(input, output, session) {
       # )
       # 
       
-      #photo code starts---------------------
-      cou <- 1
-      pict <- list()
-      ans_photo <- list()
-      
-      for (i in 1:(length(id) - 1)) {
-        if ((!is.na(id[i]) && (i != 1) && (id[i] != id[i + 1])) || i == (length(id) - 1)) {
-          cou <- cou + 1
-          
-          pict <- append(pict, safe_photo_at(data[[1]]$events$task$question$photo, i))
-          ans_photo <- append(ans_photo, safe_photo_at(data[[1]]$events$answer$photo, i))
-        }
-      }
-      
-      
-      if (length(pict) != 0) { #Photos in assignment
-        if (num_value_num() <= length(pict) && !is.na(pict[[num_value_num()]]) && pict[[num_value_num()]] != "") {
-          # Render photo display with download buttons
-          output$photo_display <- renderUI({
-            
-            photo_url <- trimws(pict[[num_value_num()]])
-            
-            output[["download_image"]] <- downloadHandler(
-              filename = function() {
-                paste("image_", t, ".jpg", sep = "")
-              },
-              content = function(file) {
-                download.file(photo_url, file, mode = "wb")
-              }
-            )
-            
-            # Create a flex container for images
-            div(style = "display: flex; flex-wrap: wrap; gap: 20px;",
-                tagList(
-                  tags$div(style = "flex: 0 1 200px; display: inline-block; text-align: center;",
-                           tags$h4(paste("Assignment for", t)),
-                           tags$img(src = photo_url, height = "500px", style = "margin: 10px; border: 1px solid #ccc;"),
-                           downloadButton("download_image"), label = "Download", class = "btn btn-primary", style = "margin-top: 10px;")
-                )
-            )
-          })
-        }
-      }
-      
-      if (length(ans_photo) != 0) { #Photos in answer
-        if (num_value_num() <= length(ans_photo) && !is.na(ans_photo[[num_value_num()]]) && ans_photo[[num_value_num()]] != "") {
-          # Render photo display with download buttons
-          output$photo_display <- renderUI({
-            
-            photo_ans_url <- ans_photo[[num_value_num()]]
-            
-            output[["download_image_2"]] <- downloadHandler(
-              filename = function() {
-                paste("image_", t, ".jpg", sep = "")
-              },
-              content = function(file) {
-                download.file(photo_ans_url, file, mode = "wb")
-              }
-            )
-            
-            # Create a flex container for images
-            div(style = "display: flex; flex-wrap: wrap; gap: 20px;", 
-                tagList(
-                  tags$div(style = "flex: 0 1 200px; display: inline-block; text-align: center;",
-                           tags$h4(paste("Answer for", t)),
-                           tags$img(src = photo_ans_url, height = "500px", style = "margin: 10px; border: 1px solid #ccc;"),
-                           downloadButton("download_image_2"), label = "Download", class = "btn btn-primary", style = "margin-top: 10px; background-color: #0CD1E8 ")
-                )
-            )
-          })
-        }
-      }
-      
-      if (length(ans_photo) == 0 && length(pict) == 0) {
-        output$photo_display <- renderUI({
-          "No photos for this game"
-        })
-      }
-      
-      if (length(pict) != 0 && num_value_num() > length(pict)) {
-        output$photo_display <- renderUI({
-          "No task exists with this number"
-        })
-      }
-      
-      if (length(pict) != 0 && length(ans_photo) != 0) {
-        if (num_value_num() <= length(ans_photo) && (is.na(ans_photo[[num_value_num()]]) || ans_photo[[num_value_num()]] == "") && (is.na(pict[[num_value_num()]]) || pict[[num_value_num()]] == "")) {
-          output$photo_display <- renderUI({
-            "No photos for this task"
-          })
-        }
-      }
-      if (length(pict) == 0 && length(ans_photo) != 0) {
-        if (num_value_num() <= length(ans_photo) && (is.na(ans_photo[[num_value_num()]]) || ans_photo[[num_value_num()]] == "")) {
-          output$photo_display <- renderUI({
-            "No photos for this task"
-          })
-        }
-      }
-      if (length(pict) != 0 && length(ans_photo) == 0) {
-        if (num_value_num() <= length(pict) && (is.na(pict[[num_value_num()]]) || pict[[num_value_num()]] == "")) {
-          output$photo_display <- renderUI({
-            "No photos for this task"
-          })
-        }
-      }
-      
-      #photo code ends here-----------------------------------
+
     
   })
   
   #####End of big table
   
   #####multiple files - (4th and 5th menus)
-  observeEvent(req(input$selected_multiple_files, num_value_num()), {
+  observeEvent(list(input$selected_multiple_files, num_value_num(), current_single_player(), dashboard_source()), {
+    req(identical(dashboard_source(), "server"), input$selected_multiple_files, num_value_num())
     data_ref  <- loaded_json()
     data_list <- load_multiple()
     
@@ -5525,16 +4905,16 @@ server <- function(input, output, session) {
       
       num_players <- length(input$selected_multiple_files)
       
-      pie_chart <- ggplot(df_pie, aes(x = "", y = value, fill = Answers)) +
-        geom_col(width = 1) +
-        coord_polar(theta = "y") +
+      pie_chart <- ggplot(df_pie, aes(x = 2, y = value, fill = Answers)) +
+        geom_col(width = 0.8) +
+        coord_polar(theta = "y") + xlim(0.5, 2.5) +
         geom_text(aes(label = label), position = position_stack(vjust = 0.5),
-                  color = "BLACK", size = 5, fontface = "bold") +
-        scale_fill_manual(values = c("Correct" = "green", "Incorrect" = "red")) +
+                  color = "white", size = 3.5, fontface = "bold") +
+        scale_fill_manual(values = c("Correct" = "#0f8b64", "Incorrect" = "#c94b5f")) +
         theme_void() +
         labs(
-          title = paste("Pie chart of task:", t),
-          subtitle = paste("\n\nNo. of Players Selected:", num_players)
+          title = NULL,
+          subtitle = paste(sum(df_pie$value), "recorded answers")
         ) +
         theme(
           plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
@@ -5542,8 +4922,8 @@ server <- function(input, output, session) {
         )
     }
     
-    output$pie_chart  <- renderPlot({ pie_chart })
-    output$pie_chart2 <- renderPlot({ pie_chart })
+    output$pie_chart  <- renderPlot({ dashboard_style_plot(pie_chart) })
+    output$pie_chart2 <- renderPlot({ dashboard_style_plot(pie_chart) })
     
     # Time vs distance scatter (uses same ngts table)
     time_num <- suppressWarnings(as.numeric(ngts$Time))
@@ -5561,27 +4941,26 @@ server <- function(input, output, session) {
       time_chart <- ggplot() + theme_void() + labs(title = "No comparable trajectory data for this task")
     } else {
       time_chart <- ggplot(df_player, aes(x = time, y = distance, fill = players)) +
-        geom_point(size = 4, shape = 22) +
-        labs(title = paste("Time chart of task:", t),
-             x = "Time for this task in seconds",
-             y = "Distance travelled in metres")
+        geom_point(size = 3.5, shape = 21, color = "#142630") +
+        theme_minimal(base_size = 12) + scale_fill_brewer(palette = "Dark2") +
+        labs(title = NULL, x = "Time (s)", y = "Distance travelled (m)", fill = "Session")
     }
     
-    output$time_chart <- renderPlot({ time_chart })
+    output$time_chart <- renderPlot({ dashboard_style_plot(time_chart) })
     
     # Save charts
     output$save_picture <- downloadHandler(
       filename = function(){ paste0("pie_chart_", Sys.Date(), ".png") },
-      content  = function(file){ png(file); print(pie_chart); dev.off() }
+      content  = function(file){ ggsave(file, plot = dashboard_style_plot(pie_chart), device = "png", width = 7, height = 5, dpi = 180) }
     )
     output$save_picture2 <- downloadHandler(
       filename = function(){ paste0("pie_chart_", Sys.Date(), ".png") },
-      content  = function(file){ png(file); print(pie_chart); dev.off() }
+      content  = function(file){ ggsave(file, plot = dashboard_style_plot(pie_chart), device = "png", width = 7, height = 5, dpi = 180) }
     )
     
     output$save_time_chart <- downloadHandler(
       filename = function(){ paste0("time_chart_", Sys.Date(), ".png") },
-      content  = function(file){ png(file); print(time_chart); dev.off() }
+      content  = function(file){ ggsave(file, plot = dashboard_style_plot(time_chart), device = "png", width = 7, height = 5, dpi = 180) }
     )
     
     # ---------- Filename part for selected comparison task --START ----------
@@ -5688,18 +5067,9 @@ server <- function(input, output, session) {
   
   
   #Upload button reading - Loaded json
-  observeEvent(req(input$uploaded_json_file, num_value_num()),{
+  observeEvent(list(input$uploaded_json_file, num_value_num(), dashboard_source()),{
+    req(identical(dashboard_source(), "upload"), input$uploaded_json_file)
     req(num_value_num() && num_value_num() != 0 && num_value_num() > 0)
-    df_react <- reactiveVal()
-    
-    files <- list.files(json_dir, pattern = "\\.json$", full.names = FALSE)
-    files <- grep(input$selected_games, files, ignore.case = TRUE, value = TRUE)
-    
-    choices <- c("All Files" = "ALL", files)
-    
-    updatePickerInput(session, "selected_files",
-                      choices = choices,
-                      selected = NULL)
     
     output$info_download <- renderText({
       ""
@@ -5721,9 +5091,9 @@ server <- function(input, output, session) {
     ev <- data[[1]]$events$type #Name of the event
     pict_quest <- data[[1]]$events$task$question$photo
     ans_type <- data[[1]]$events$task$answer$type #what is required as the answer type
-    for (j in 1:(length(id) - 1)) {
-      if ((!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
-        if (!is.na(id[j]) && ans_type[j] == "TEXT") {
+    for (j in seq_len(max(length(id) - 1L, 0L))) {
+      if (isTRUE(!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
+        if (isTRUE(!is.na(id[j]) && ans_type[j] == "TEXT")) {
           if (!is.na(data[[1]]$events$answer$correct[j]) && data[[1]]$events$answer$correct[j] == "TRUE" ) {
             ans <- append(ans, paste("Correct", data[[1]]$events$answer$text[j])) #add text in input in the answer column
           }
@@ -5734,7 +5104,7 @@ server <- function(input, output, session) {
             ans <- append(ans, NA)
           }
         }
-        else if (!is.na(id[j]) && ans_type[j] == "MULTIPLE_CHOICE_TEXT") {
+        else if (isTRUE(!is.na(id[j]) && ans_type[j] == "MULTIPLE_CHOICE_TEXT")) {
           if (!is.na(data[[1]]$events$answer$correct[j]) && data[[1]]$events$answer$correct[j] == "TRUE") {
             ans <- append(ans, paste("Correct", data[[1]]$events$answer$selectedChoice$value[j])) #add the validated answer in the answer column
           }
@@ -5745,7 +5115,7 @@ server <- function(input, output, session) {
             ans <- append(ans, NA)
           }
         }
-        else if (!is.na(id[j]) && ans_type[j] == "NUMBER") {
+        else if (isTRUE(!is.na(id[j]) && ans_type[j] == "NUMBER")) {
           if (!is.na(data[[1]]$events$answer$correct[j]) && data[[1]]$events$answer$correct[j] == "TRUE") {
             ans <- append(ans, paste("Correct", data[[1]]$events$answer$numberInput[j])) #add the validated answer in the answer column
           }
@@ -5792,8 +5162,8 @@ server <- function(input, output, session) {
     # Distance to the correct answer
     dist <- list()
     
-    for (j in 1:(length(id) - 1)) {
-      if ((!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
+    for (j in seq_len(max(length(id) - 1L, 0L))) {
+      if (isTRUE(!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
         dist <- append(dist, format_task_error(data[[1]]$events, j))
       }
     }
@@ -5812,8 +5182,8 @@ server <- function(input, output, session) {
     tps <- data[[1]]$events$timestamp
     time1 <- as.POSIXct(tps[1], format = "%Y-%m-%dT%H:%M:%OS",tz = "UTC")
     tmp <- list()
-    for (j in 1:(length(id) - 1)) {
-      if ((!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
+    for (j in seq_len(max(length(id) - 1L, 0L))) {
+      if (isTRUE(!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
         time2 <- as.POSIXct(tps[j], format = "%Y-%m-%dT%H:%M:%OS",tz = "UTC")
         tmp <- append(tmp, paste(floor(as.numeric(time2 - time1, units = "secs")),"s"))
         time1 <- as.POSIXct(tps[j+1], format = "%Y-%m-%dT%H:%M:%OS",tz = "UTC")
@@ -5824,11 +5194,11 @@ server <- function(input, output, session) {
     #Computing tries number for each task
     tries = 0
     try <- list()
-    for (j in 1:(length(id) - 1)) {
+    for (j in seq_len(max(length(id) - 1L, 0L))) {
       if (ev[j] == "ON_OK_CLICKED") { #Answer when the player clicks on OK
         tries <- tries + 1
       }
-      if ((!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
+      if (isTRUE(!is.na(id[j]) && (id[j] != id[j + 1])) || j == (length(id) - 1)) {
         try <- append(try, tries)
         tries = 0
       }
@@ -5884,12 +5254,15 @@ server <- function(input, output, session) {
     
     
     #Recovering answers position for the map
-    for (i in 1:(length(id)-1)) {
+    for (i in seq_len(max(length(id) - 1L, 0L))) {
       if (!is.na(cat_task[i])) {
         if ((cat_task[i] == "nav") && (cou == num_value_num())) {
-          long <- append(long, coor[[i]][1])
-          lati <- append(lati, coor[[i]][2])
-          accuracy_rad <- accuracy_radius[[i]]
+          xy <- coordinate_pair_at(coor, i)
+          if (!is.null(xy)) {
+            long <- append(long, xy[1])
+            lati <- append(lati, xy[2])
+          }
+          accuracy_rad <- get_task_accuracy(data[[1]]$events, i, kind = "nav")
           t <- type_task[i]
         }
         if ((cat_task[i] == "info") && (cou == num_value_num())) {
@@ -5899,11 +5272,17 @@ server <- function(input, output, session) {
       }
       if (!is.na(type_task[i])) { #target point for theme task
         if ((type_task[i] == "theme-loc") && (ev[i] == "ON_OK_CLICKED") && (cou == num_value_num())) {
-          lng_targ <- append(lng_targ, targ[[i]][1])
-          lat_targ <- append(lat_targ, targ[[i]][2])
-          lng_true <- append(lng_true, coor_true$longitude[[i]])
-          lat_true <- append(lat_true, coor_true$latitude[[i]])
-          accuracy_rad <- accuracy_radius[[i]]
+          xy <- get_click_lonlat(data[[1]]$events, i)
+          if (all(is.finite(xy))) {
+            lng_targ <- append(lng_targ, xy[1])
+            lat_targ <- append(lat_targ, xy[2])
+          }
+          xy <- c(coor_true$longitude[i], coor_true$latitude[i])
+          if (all(is.finite(xy))) {
+            lng_true <- append(lng_true, xy[1])
+            lat_true <- append(lat_true, xy[2])
+          }
+          accuracy_rad <- get_task_accuracy(data[[1]]$events, i, kind = "nav")
           t <- type_task[i]
         }
         if ((type_task[i] == "theme-loc") && (cou == num_value_num())) { #Always having the task type shown for theme-localisation
@@ -5997,16 +5376,16 @@ server <- function(input, output, session) {
             }
           }
         }
-        if ((type_task[i] == "free") && (cou == num_value_num()) && length(drawing_point_lat) != 0 && !is.na(drawing_point_lat[[i]]) && ans_type[[i]] == "DRAW") {
+        if ((type_task[i] == "free") && (cou == num_value_num()) && length(drawing_point_lat) != 0 && !is.na(drawing_point_lat[[i]]) && isTRUE(ans_type[[i]] == "DRAW")) {
           dr_point_lat <- append(dr_point_lat, drawing_point_lat[[i]])
           dr_point_lng <- append(dr_point_lng, drawing_point_lng[[i]])
           t <- type_task[i]
         }
-        if ((type_task[i] == "free") && (cou == num_value_num()) && (length(drawing_point_lat) == 0 || is.na(drawing_point_lat[[i]])) && ans_type[[i]] == "DRAW") { #correcting error to visualize draw
+        if ((type_task[i] == "free") && (cou == num_value_num()) && (length(drawing_point_lat) == 0 || is.na(drawing_point_lat[[i]])) && isTRUE(ans_type[[i]] == "DRAW")) { #correcting error to visualize draw
           mr <- TRUE
           t <- type_task[i]
         }
-        if ((type_task[i] == "free") && (cou == num_value_num()) && ans_type[[i]] != "DRAW") {
+        if ((type_task[i] == "free") && (cou == num_value_num()) && !isTRUE(ans_type[[i]] == "DRAW")) {
           mr <- TRUE
           t <- type_task[i]
         }
@@ -6014,7 +5393,7 @@ server <- function(input, output, session) {
       if (is.na(type_task[i]) && (i != 1) && (cou == num_value_num())) { #na task
         mr <- TRUE
       }
-      if ((!is.na(id[i]) && (i != 1) && (id[i] != id[i + 1])) || i == (length(id) - 1)) {
+      if (isTRUE(!is.na(id[i]) && (i != 1) && (id[i] != id[i + 1])) || i == (length(id) - 1)) {
         cou <- cou + 1
       }
     }
@@ -6024,8 +5403,10 @@ server <- function(input, output, session) {
     traj_lat <- list()
     accuracy <- list()
     task_number <- data[[1]]$waypoints$taskNo #Task number
-    for (i in 1:length(task_number)) {
-      if (task_number[i] == num_value_num()) {
+    for (i in seq_along(task_number)) {
+      if (isTRUE(task_number[i] == num_value_num()) &&
+            all(is.finite(c(data[[1]]$waypoints$position$coords$longitude[i],
+                            data[[1]]$waypoints$position$coords$latitude[i])))) {
         traj_lng <- append(traj_lng, data[[1]]$waypoints$position$coords$longitude[i])
         traj_lat <- append(traj_lat, data[[1]]$waypoints$position$coords$latitude[i])
         if (length(data[[1]]$waypoints$position$coords$accuracy) != 0) {
@@ -6049,10 +5430,10 @@ server <- function(input, output, session) {
     time_waypoints <- list()
     tps_waypoints <- data[[1]]$waypoints$timestamp
     
-    for (k in 1:length(tmp)) {
+    for (k in seq_along(tmp)) {
       if (tmp[[k]] == "0 s") {
-        for (i in 1:length(task_number)) {
-          if (task_number[i] == k) {
+        for (i in seq_along(task_number)) {
+          if (isTRUE(task_number[i] == k)) {
             time_waypoints <- append(time_waypoints, tps_waypoints[[i]])
           }
         }
@@ -6082,7 +5463,7 @@ server <- function(input, output, session) {
           lat_2 <- traj_lat[[k+1]][1]
           lng_2 <- traj_lng[[k+1]][1]
           d <- R * acos(sin(lat_1*deg_to_rad)*sin(lat_2*deg_to_rad) + cos(lat_1*deg_to_rad)*cos(lat_2*deg_to_rad)*cos((lng_2 - lng_1)*deg_to_rad))
-          if (accuracy[[k]] >= 20) {
+          if (isTRUE(accuracy[[k]] >= 20)) {
             traj_lat[k] <- traj_lat[k+1] #Filter GPS coordinate errors
             traj_lng[k] <- traj_lng[k+1]
           }
@@ -6093,7 +5474,7 @@ server <- function(input, output, session) {
     rg <- cbind(unlist(typ), unlist(cons), unlist(ans), unlist(tmp), unlist(try), unlist(dist))
     #print(rg)
     
-    for (i in 1:(nrow(rg))) {
+    for (i in seq_len(NROW(rg))) {
       if (((!is.na(rg[i,1]) && rg[i,1] == "nav-arrow") || (!is.na(rg[i,1]) && rg[i,1] == "nav-text")
            || (!is.na(rg[i,1]) && rg[i,1] == "nav-photo")) && rg[i,4] != "0 s" && is.na(rg[i,3])) {
         rg[i,3] <- "Correct"
@@ -6106,262 +5487,7 @@ server <- function(input, output, session) {
       }
     }
     
-    # Build the main table from the same canonical source used by "Save all to CSV"
-    sm <- task_summary(data[[1]])
-    
-    df <- data.frame(
-      Type = pretty_task_type_vec(sm$task_type),
-      Assignment = sm$assignment,
-      Answer = sm$answer_txt,
-      `Time (s)` = sm$time_s,
-      Tries = sm$tries,
-      `Viewing dir. (°)` = format_bearing_deg(sm$viewing_direction),
-      `Final view dir. (°)` = format_bearing_deg(sm$final_viewing_direction),
-      `Pointing dir. (°)` = format_bearing_deg(sm$pointing_direction),
-      `Rotation (°)` = format_angle_deg(sm$rotation_angle),
-      `Final answer (°)` = format_bearing_deg(sm$final_answer_direction),
-      `Error (°/m)` = sm$error_txt,
-      
-      row.names = NULL,
-      check.names = FALSE,
-      stringsAsFactors = FALSE
-    )
-    
-    info_mask <- tolower(trimws(df$Type)) == "information"
-    df$Answer[info_mask] <- NA_character_
-    df$Tries[info_mask] <- 0
-    df[["Viewing dir. (°)"]][info_mask] <- NA_character_
-    df[["Final view dir. (°)"]][info_mask] <- NA_character_
-    df[["Pointing dir. (°)"]][info_mask] <- NA_character_
-    df[["Rotation (°)"]][info_mask] <- NA_character_
-    df[["Final answer (°)"]][info_mask] <- NA_character_
-    df[["Error (°/m)"]][info_mask] <- NA_character_
-    
-    # For dashboard display: show max 2-line information text, full text on hover
-    df <- apply_assignment_display_limit(df)
-    
-    
-    
-    
-    #Name of the player
-    #print(data[[1]]$players[1])
-    output$player_name <- renderText({
-      paste("Player: ", data[[1]]$players[1], sep = "")
-    })
-    
-    
-    #Overall score
-    good <- sum(sm$status == "Correct", na.rm = TRUE)
-    total <- nrow(sm)
-    
-    
-    output$overall_score <- renderText({
-      paste("Overall score: ", good, "/", total, sep = "")
-    })
-    
-    output$player_info_box <- renderUI({
-      req(data[[1]]$players[1])
-      
-      div(id = "inlineDiv",
-          style = "margin-bottom: 20px; border: 1px solid #ccc; padding: 10px; border-radius: 5px; background-color: #f9f9f9;",
-          h5(textOutput("player_name")),
-          h5(textOutput("overall_score"))
-      )
-    })
-    
-    df_react(df)
-    
-    
-    
-    #PREVIOUSLY OBSERVE BUTTONS - PICKER INPUT 
-    # observe({
-    #   req(df_react())
-    #   choices <- seq_len(nrow(df_react()))
-    #   updatePickerInput(session, "num_value_comparison", choices = choices, selected = input$num_value_comparison)
-    # })
-    
-    
-    ###############----------Task IDs updation all 4 STARTS-------------################
-    observeEvent(df_react(), {
-      df <- df_react()
-      if (is.null(df) || nrow(df) == 0) return()
-      
-      n <- nrow(df)
-      cur <- suppressWarnings(as.integer(input$num_value))
-      if (is.na(cur) || cur < 1 || cur > n) cur <- 1
-      
-      update_main_task_pickers(
-        session = session,
-        track = data[[1]],
-        n_tasks = n,
-        selected = cur
-      )
-    })
-    ###############----------Task IDs updation all 4 STARTS-------------################
-    
-    output$iris_data <- renderDT({
-      df_react()
-    })
-    
-    
-    
-    
-    #-----------all tasks - id checkbox filter starts --------------------------------
-    output$task_id_selector <- renderUI({
-      req(df_react())
-      df <- df_react()
-      
-      task_ids <- as.character(seq_len(nrow(df)))   # row numbers used in All tasks tab
-      
-      # preserve previous selection when switching player
-      prev_selected <- isolate(input$selected_task_ids)
-      prev_selected <- as.character(prev_selected)
-      
-      # keep only those that still exist for the newly selected player
-      selected_ids <- intersect(prev_selected, task_ids)
-      
-      # if nothing valid remains, fall back to all
-      if (length(selected_ids) == 0) {
-        selected_ids <- task_ids
-      }
-      
-      tagList(
-        pickerInput(
-          "selected_task_ids",
-          "Filter by Task ID:",
-          choices = task_ids,
-          selected = selected_ids,
-          multiple = TRUE,
-          options = list(
-            `actions-box` = TRUE,
-            `live-search` = FALSE,
-            `none-selected-text` = "Filter by Task ID:",
-            `width` = '100%',
-            container = FALSE,
-            size = 10
-          )
-        )
-      )
-    })
-    
-    # Filtered data
-    filtered_df <- reactive({
-      req(df_react())
-      df <- df_react()
-      
-      if (is.null(input$selected_task_ids) || length(input$selected_task_ids) == 0) {
-        return(df)   # if none selected, show all
-      }
-      
-      df[input$selected_task_ids, , drop = FALSE]   # subset by row numbers
-    })
-    
-    # Show table
-    output$iris_data <- renderDT({
-      df_show <- filtered_df()
-      
-      if (!advanced_direction_enabled()) {
-        df_show <- drop_advanced_direction_cols(df_show)
-      }
-      
-      DT::datatable(
-        df_show,
-        escape = setdiff(names(df_show), "Assignment"),
-        class = "compact stripe hover",
-        options = list(
-          pageLength = iris_data_page_length(),
-          lengthMenu = c(10, 25, 50, 100),
-          ordering = FALSE,
-          autoWidth = FALSE
-        ),
-        callback = DT::JS("
-      table.on('length.dt', function(e, settings, len) {
-        Shiny.setInputValue('iris_data_page_length', len, {priority: 'event'});
-      });
-    ")
-      )
-    })
-    
-    #---------logic for select/deselect all starts ----------------------
-    observeEvent(input$select_all_tasks, {
-      req(df_react())
-      task_ids <- seq_len(nrow(df_react()))
-      updateSelectInput(session, "selected_task_ids", selected = task_ids)
-    })
-    
-    observeEvent(input$deselect_all_tasks, {
-      updateSelectInput(session, "selected_task_ids", selected = character(0))
-    })
-    
-    #---------logic for select/deselect all ends ----------------------
-    
-    #---------task filter id for all tasks ends------------------------------------
-    
-    
     #DOWNLOAD FILTERED BIG TABLE - FOR SINGLE FILE UPLOAD..STARTS-----------------------------
-    output$save_data <- downloadHandler(
-      filename = function() {
-        player_name <- "player"
-        
-        data_now <- uploaded_json()
-        if (!is.null(data_now) && length(data_now) > 0 && !is.null(data_now[[1]]$players) && length(data_now[[1]]$players) > 0) {
-          player_name <- as.character(data_now[[1]]$players[1])
-        }
-        
-        player_name <- gsub("[^A-Za-z0-9_\\-]", "_", player_name)
-        paste0(player_name, "_", Sys.Date(), ".csv")
-      },
-      
-      content = function(file) {
-        df_out <- filtered_df()
-        
-        if (!advanced_direction_enabled()) {
-          df_out <- drop_advanced_direction_cols(df_out)
-        }
-        
-        if (!is.null(df_out) && nrow(df_out) > 0) {
-          if ("Assignment" %in% names(df_out)) {
-            df_out$Assignment <- html_visible_text(df_out$Assignment)
-          }
-          if ("Answer" %in% names(df_out)) {
-            df_out$Answer <- clean_export_text(df_out$Answer)
-          }
-        }
-        
-        data_now <- uploaded_json()
-        
-        game_name <- if (!is.null(input$selected_games) && nzchar(input$selected_games)) {
-          as.character(input$selected_games)
-        } else {
-          "Uploaded JSON"
-        }
-        
-        player_name <- NA_character_
-        if (!is.null(data_now) && length(data_now) > 0 && !is.null(data_now[[1]]$players) && length(data_now[[1]]$players) > 0) {
-          player_name <- as.character(data_now[[1]]$players[1])
-        }
-        
-        if (!is.null(df_out) && nrow(df_out) > 0) {
-          df_out <- data.frame(
-            Game = game_name,
-            Player = player_name,
-            df_out,
-            check.names = FALSE,
-            stringsAsFactors = FALSE
-          )
-        }
-        
-        write_csv_excel_utf8(df_out, file, na = "NA")
-      }
-    )
-    
-    output$save_big_table <- renderUI({
-      req(filtered_df())
-      
-      if (nrow(filtered_df()) > 0) {
-        downloadButton('save_data', 'Save to CSV')
-      }
-    })
     # DOWNLOAD FILTERED BIG TABLE - FOR SINGLE FILE UPLOAD.. ENDS--------------------------
     
     
@@ -6901,114 +6027,6 @@ server <- function(input, output, session) {
       # )
       # 
       
-      #photo code starts---------------------
-    cou <- 1
-    pict <- list()
-    ans_photo <- list()
-    
-    for (i in 1:(length(id) - 1)) {
-      if ((!is.na(id[i]) && (i != 1) && (id[i] != id[i + 1])) || i == (length(id) - 1)) {
-        cou <- cou + 1
-        
-        pict <- append(pict, safe_photo_at(data[[1]]$events$task$question$photo, i))
-        ans_photo <- append(ans_photo, safe_photo_at(data[[1]]$events$answer$photo, i))
-      }
-    }
-    
-    
-    if (length(pict) != 0) { #Photos in assignment
-      if (num_value_num() <= length(pict) && !is.na(pict[[num_value_num()]]) && pict[[num_value_num()]] != "") {
-        # Render photo display with download buttons
-        output$photo_display <- renderUI({
-          
-          photo_url <- trimws(pict[[num_value_num()]])
-          
-          
-          output[["download_image"]] <- downloadHandler(
-            filename = function() {
-              paste("image_", t, ".jpg", sep = "")
-            },
-            content = function(file) {
-              download.file(photo_url, file, mode = "wb")
-            }
-          )
-          
-          # Create a flex container for images
-          div(style = "display: flex; flex-wrap: wrap; gap: 20px;",
-              tagList(
-                tags$div(style = "flex: 0 1 200px; display: inline-block; text-align: center;",
-                         tags$h4(paste("Assignment for", t)),
-                         tags$img(src = photo_url, height = "500px", style = "margin: 10px; border: 1px solid #ccc;"),
-                         downloadButton("download_image"), label = "Download", class = "btn btn-primary", style = "margin-top: 10px;")
-              )
-          )
-        })
-      }
-    }
-    
-    if (length(ans_photo) != 0) { #Photos in answer
-      if (num_value_num() <= length(ans_photo) && !is.na(ans_photo[[num_value_num()]]) && ans_photo[[num_value_num()]] != "") {
-        # Render photo display with download buttons
-        output$photo_display <- renderUI({
-          
-          photo_ans_url <- ans_photo[[num_value_num()]]
-          
-          output[["download_image_2"]] <- downloadHandler(
-            filename = function() {
-              paste("image_", t, ".jpg", sep = "")
-            },
-            content = function(file) {
-              download.file(photo_ans_url, file, mode = "wb")
-            }
-          )
-          
-          # Create a flex container for images
-          div(style = "display: flex; flex-wrap: wrap; gap: 20px;", 
-              tagList(
-                tags$div(style = "flex: 0 1 200px; display: inline-block; text-align: center;",
-                         tags$h4(paste("Answer for", t)),
-                         tags$img(src = photo_ans_url, height = "500px", style = "margin: 10px; border: 1px solid #ccc;"),
-                         downloadButton("download_image_2"), label = "Download", class = "btn btn-primary", style = "margin-top: 10px; background-color: #0CD1E8 ")
-              )
-          )
-        })
-      }
-    }
-    
-    if (length(ans_photo) == 0 && length(pict) == 0) {
-      output$photo_display <- renderUI({
-        "No photos for this game"
-      })
-    }
-    
-    if (length(pict) != 0 && num_value_num() > length(pict)) {
-      output$photo_display <- renderUI({
-        "No task exists with this number"
-      })
-    }
-    
-    if (length(pict) != 0 && length(ans_photo) != 0) {
-      if (num_value_num() <= length(ans_photo) && (is.na(ans_photo[[num_value_num()]]) || ans_photo[[num_value_num()]] == "") && (is.na(pict[[num_value_num()]]) || pict[[num_value_num()]] == "")) {
-        output$photo_display <- renderUI({
-          "No photos for this task"
-        })
-      }
-    }
-    if (length(pict) == 0 && length(ans_photo) != 0) {
-      if (num_value_num() <= length(ans_photo) && (is.na(ans_photo[[num_value_num()]]) || ans_photo[[num_value_num()]] == "")) {
-        output$photo_display <- renderUI({
-          "No photos for this task"
-        })
-      }
-    }
-    if (length(pict) != 0 && length(ans_photo) == 0) {
-      if (num_value_num() <= length(pict) && (is.na(pict[[num_value_num()]]) || pict[[num_value_num()]] == "")) {
-        output$photo_display <- renderUI({
-          "No photos for this task"
-        })
-      }
-    }
-    
     #No multiple analysis
     cores <- data.frame(Name = c(), Correct = c(), Answer = c(), Error = c())
     ngts <- data.frame(Name = c(), Correct = c(), Time = c(), Distance = c())
@@ -7055,6 +6073,85 @@ server <- function(input, output, session) {
     
   })
   #End of upload json
+  dashboard_photo_urls <- function(track, task) {
+    last_photo <- function(column) {
+      indices <- seq.int(task$start_idx, task$end_idx)
+      urls <- vapply(indices, function(i) safe_photo_at(column, i), character(1))
+      urls <- trimws(urls[!is.na(urls) & nzchar(urls)])
+      if (length(urls)) tail(urls, 1L) else NA_character_
+    }
+    if (is.null(track) || is.null(task)) return(list(assignment = NA_character_, answer = NA_character_))
+    list(assignment = last_photo(track$events$task$question$photo),
+         answer = last_photo(track$events$answer$photo))
+  }
+  dashboard_photos <- reactive({ dashboard_photo_urls(dashboard_track(), dashboard_selected_task()) })
+  output$photo_display <- renderUI({
+    photos <- dashboard_photos()
+    task <- dashboard_selected_task()
+    if (all(is.na(unlist(photos)))) return(div(class = "geo-empty-note", icon("image"), p("No photos recorded for this task.")))
+    photo <- function(url, title, download_id) {
+      if (is.na(url)) return(NULL)
+      tags$figure(class = "geo-photo-card", tags$figcaption(title),
+        tags$img(src = url, alt = paste(title, "for task", task$taskNo), loading = "lazy"),
+        downloadButton(download_id, "Download photo"))
+    }
+    div(class = "geo-photos-grid", photo(photos$assignment, "Assignment", "download_image"),
+        photo(photos$answer, "Player answer", "download_image_2"))
+  })
+  for (kind in c("assignment", "answer")) local({
+    which_photo <- kind
+    id <- if (kind == "assignment") "download_image" else "download_image_2"
+    output[[id]] <- downloadHandler(
+      filename = function() {
+        url <- dashboard_photos()[[which_photo]]
+        extension <- tolower(tools::file_ext(sub("[?#].*$", "", url)))
+        if (is.na(extension) || !extension %in% c("jpg", "jpeg", "png", "gif", "webp", "bmp")) extension <- "jpg"
+        paste0(which_photo, "_task_", num_value_num(), ".", extension)
+      },
+      content = function(file) {
+        url <- dashboard_photos()[[which_photo]]
+        req(!is.na(url))
+        download.file(url, file, mode = "wb", quiet = TRUE)
+      }
+    )
+  })
+
+  dashboard_style_plot <- function(plot) {
+    dark <- identical(input$theme, "Dark")
+    surface <- if (dark) "#182630" else "#ffffff"
+    text <- if (dark) "#e8f0f4" else "#142630"
+    line <- if (dark) "#30434f" else "#dce5ea"
+    plot + theme(
+      text = element_text(color = text, size = 12),
+      plot.title = element_text(color = text, size = 14, face = "bold"),
+      plot.subtitle = element_text(color = text, size = 11),
+      axis.text = element_text(color = text), axis.title = element_text(color = text),
+      legend.text = element_text(color = text), legend.title = element_text(color = text),
+      plot.background = element_rect(fill = surface, color = NA),
+      panel.background = element_rect(fill = surface, color = NA),
+      legend.background = element_rect(fill = surface, color = NA),
+      legend.key = element_rect(fill = surface, color = NA),
+      panel.grid.major = if (inherits(plot$coordinates, "CoordPolar")) element_blank() else element_line(color = line),
+      panel.grid.minor = element_blank(),
+      legend.position = "bottom"
+    )
+  }
+
+  # Shared reference-session CSV: export full assignments and current filters.
+  output$save_data <- downloadHandler(
+    filename = function() paste0(sanitize_filename(dashboard_player_label(dashboard_track())), "_", Sys.Date(), ".csv"),
+    content = function(file) {
+      req(dashboard_track())
+      df <- filtered_df()
+      if (!advanced_direction_enabled()) df <- drop_advanced_direction_cols(df)
+      if (nrow(df)) df <- data.frame(
+        Game = if (identical(dashboard_source(), "upload")) "Imported JSON" else get_selected_game_name(),
+        Player = dashboard_player_label(dashboard_track()), df,
+        check.names = FALSE, stringsAsFactors = FALSE)
+      write_csv_excel_utf8(df, file)
+    }
+  )
+
   
   
   
@@ -7066,9 +6163,7 @@ server <- function(input, output, session) {
   all_ids <- c("num_value", "num_value_pictures", "num_value_comparison", "num_value_Statistics")
   
   # Helper to read Map picker as number wherever we compare
-  num_value_num <- reactive({
-    suppressWarnings(as.integer(input$num_value))
-  })
+
   
   #### STARTS - toggle buttons sync lock####
   
@@ -7152,6 +6247,7 @@ server <- function(input, output, session) {
   observeEvent(
     list(input$selected_map_files, input$num_value, current_single_player(), map_rv()),
     {
+      req(identical(dashboard_source(), "server"))
       req(input$num_value)
       req(map_rv())
       req(apiURL_rv())
@@ -7310,6 +6406,7 @@ server <- function(input, output, session) {
   
   
   observeEvent(input$visualize_trajectories_btn, {
+    req(identical(dashboard_source(), "server"))
     req(input$num_value)
     req(map_rv())
     req(apiURL_rv())
@@ -7420,6 +6517,7 @@ server <- function(input, output, session) {
   
   build_current_map_for_download <- function() {
     req(map_rv())
+    if (identical(dashboard_source(), "upload")) return(map_rv())
     
     m <- map_rv()
     
@@ -7606,6 +6704,45 @@ server <- function(input, output, session) {
   #   they open it — getUserGames now includes games where sharedWith contains
   #   the authenticated user's email.
 
+  # Bind each modal's recipient list to the item whose sharing data was fetched.
+  game_share_target_rv <- reactiveVal(NULL)
+  event_share_target_rv <- reactiveVal(NULL)
+  track_share_target_rv <- reactiveVal(NULL)
+  current_share_track <- function() {
+    if (length(input$selected_files) == 1) input$selected_files[1] else NULL
+  }
+
+  observe_share_removals <- function(emails_rv, target_rv, current_target, prefix, endpoint) {
+    handlers <- list()
+    observe({
+      emails <- emails_rv()
+      target <- target_rv()
+      selected <- current_target()
+      lapply(handlers, function(handler) handler$destroy())
+      handlers <<- list()
+      if (is.null(target) || !identical(target, selected)) return()
+
+      for (i in seq_along(emails)) local({
+        email <- emails[i]
+        target_id <- target
+        btn_id <- paste0(prefix, i)
+        handlers[[btn_id]] <<- observeEvent(input[[btn_id]], {
+          req(identical(target_rv(), target_id), identical(current_target(), target_id),
+              email %in% emails_rv(), accessToken_rv(), apiURL_rv())
+          url <- paste0(apiURL_rv(), endpoint, target_id, "/share")
+          result <- api_request(url, accessToken_rv(),
+                                body = list(emails = list(email)), method = "DELETE")
+          if (result$status == 200) {
+            emails_rv(result$data$sharedWith)
+            showNotification(paste0("Removed ", email), type = "message")
+          } else {
+            showNotification("Could not remove user. Please try again.", type = "error")
+          }
+        }, ignoreInit = TRUE)
+      })
+    })
+  }
+
   # Reactive value holding the current shared-with emails for the selected game.
   shared_emails_rv <- reactiveVal(character(0))
 
@@ -7627,6 +6764,7 @@ server <- function(input, output, session) {
 
     # Fetch who this game is already shared with.
     game_id <- input$selected_games
+    game_share_target_rv(game_id)
     url <- paste0(apiURL_rv(), "/game/", game_id, "/share")
     result <- api_get(url, accessToken_rv())
 
@@ -7693,6 +6831,7 @@ server <- function(input, output, session) {
   # update the reactive list, and clear the input.
   observeEvent(input$share_add_btn, {
     req(input$selected_games, accessToken_rv(), apiURL_rv())
+    req(identical(game_share_target_rv(), input$selected_games))
 
     email <- trimws(tolower(input$share_email_input))
     if (!grepl("@", email)) {
@@ -7740,32 +6879,8 @@ server <- function(input, output, session) {
     }
   })
 
-  # Dynamically observe the per-email "X" remove buttons.
-  # Each button's ID is "remove_share_N" where N is the position in the list.
-  # once = TRUE prevents duplicate observer registration on re-render.
-  observe({
-    emails <- shared_emails_rv()
-    lapply(seq_along(emails), function(i) {
-      btn_id <- paste0("remove_share_", i)
-      observeEvent(input[[btn_id]], {
-        req(input$selected_games, accessToken_rv(), apiURL_rv())
-
-        email_to_remove <- emails[i]
-        game_id <- input$selected_games
-        url <- paste0(apiURL_rv(), "/game/", game_id, "/share")
-        result <- api_request(url, accessToken_rv(),
-                              body = list(emails = list(email_to_remove)),
-                              method = "DELETE")
-
-        if (result$status == 200) {
-          shared_emails_rv(result$data$sharedWith)
-          showNotification(paste0("Removed ", email_to_remove), type = "message")
-        } else {
-          showNotification("Could not remove user.", type = "error")
-        }
-      }, ignoreInit = TRUE, once = TRUE)
-    })
-  })
+  observe_share_removals(shared_emails_rv, game_share_target_rv,
+                         function() input$selected_games, "remove_share_", "/game/")
 
 
   # ── Share an event ──────────────────────────────────────────────────
@@ -7789,6 +6904,7 @@ server <- function(input, output, session) {
     req(event_is_active(), accessToken_rv(), apiURL_rv())
 
     event_id <- input$selected_event
+    event_share_target_rv(event_id)
     url <- paste0(apiURL_rv(), "/event/", event_id, "/share")
     result <- api_get(url, accessToken_rv())
 
@@ -7846,6 +6962,7 @@ server <- function(input, output, session) {
   # Add an email to the event's sharedWith.
   observeEvent(input$share_event_add_btn, {
     req(event_is_active(), accessToken_rv(), apiURL_rv())
+    req(identical(event_share_target_rv(), input$selected_event))
 
     email <- trimws(tolower(input$share_event_email_input))
     if (!grepl("@", email)) {
@@ -7871,30 +6988,8 @@ server <- function(input, output, session) {
     }
   })
 
-  # Per-email "X" revoke buttons: DELETE /event/:id/share.
-  observe({
-    emails <- event_shared_emails_rv()
-    lapply(seq_along(emails), function(i) {
-      btn_id <- paste0("remove_event_share_", i)
-      observeEvent(input[[btn_id]], {
-        req(event_is_active(), accessToken_rv(), apiURL_rv())
-
-        email_to_remove <- emails[i]
-        event_id <- input$selected_event
-        url <- paste0(apiURL_rv(), "/event/", event_id, "/share")
-        result <- api_request(url, accessToken_rv(),
-                              body = list(emails = list(email_to_remove)),
-                              method = "DELETE")
-
-        if (result$status == 200) {
-          event_shared_emails_rv(result$data$sharedWith)
-          showNotification(paste0("Removed ", email_to_remove), type = "message")
-        } else {
-          showNotification("Could not remove user.", type = "error")
-        }
-      }, ignoreInit = TRUE, once = TRUE)
-    })
-  })
+  observe_share_removals(event_shared_emails_rv, event_share_target_rv,
+                         function() input$selected_event, "remove_event_share_", "/event/")
 
 
   # ── Share a single track ───────────────────────────────────────────
@@ -7925,8 +7020,10 @@ server <- function(input, output, session) {
   # Open the modal: fetch who this track is already shared with.
   observeEvent(input$open_share_track_modal, {
     req(input$selected_files, accessToken_rv(), apiURL_rv())
+    req(current_share_track())
 
     track_id <- input$selected_files[1]
+    track_share_target_rv(track_id)
     url <- paste0(apiURL_rv(), "/track/", track_id, "/share")
     result <- api_get(url, accessToken_rv())
 
@@ -7989,6 +7086,7 @@ server <- function(input, output, session) {
   # Handle the "Share" button click: validate email, POST to server.
   observeEvent(input$share_track_add_btn, {
     req(input$selected_files, accessToken_rv(), apiURL_rv())
+    req(current_share_track(), identical(track_share_target_rv(), current_share_track()))
 
     email <- trimws(tolower(input$share_track_email_input))
     if (!grepl("@", email)) {
@@ -8018,31 +7116,8 @@ server <- function(input, output, session) {
     }
   })
 
-  # Per-email "X" revoke buttons: DELETE /track/:id/share.
-  observe({
-    emails <- track_shared_emails_rv()
-    lapply(seq_along(emails), function(i) {
-      btn_id <- paste0("remove_track_share_", i)
-      observeEvent(input[[btn_id]], {
-        req(input$selected_files, accessToken_rv(), apiURL_rv())
-
-        email_to_remove <- emails[i]
-        track_id <- input$selected_files[1]
-        url <- paste0(apiURL_rv(), "/track/", track_id, "/share")
-        result <- api_request(url, accessToken_rv(),
-                              body = list(emails = list(email_to_remove)),
-                              method = "DELETE")
-
-        if (result$status == 200) {
-          track_shared_emails_rv(result$data$sharedWith)
-          showNotification(paste0("Removed ", email_to_remove), type = "message")
-        } else {
-          showNotification("Could not remove user.", type = "error")
-        }
-      }, ignoreInit = TRUE, once = TRUE)
-    })
-  })
-
+  observe_share_removals(track_shared_emails_rv, track_share_target_rv,
+                         current_share_track, "remove_track_share_", "/track/")
 
 }
 
