@@ -2710,7 +2710,7 @@ server <- function(input, output, session) {
   selected_game_is_virtual <- reactive({
     req(input$selected_games)
     
-    env_map <- game_is_ve_rv()
+    env_map <- with_event_games(game_is_ve_rv(), event_game_is_ve_rv())
     
     if (is.null(env_map) || length(env_map) == 0) {
       return(FALSE)
@@ -2809,7 +2809,7 @@ server <- function(input, output, session) {
   # This text prefix is also the fallback if the colored badge HTML is stripped.
   relabel_games <- function(choice_vec) {
     if (is.null(choice_vec) || length(choice_vec) == 0) return(choice_vec)
-    labels <- game_labels_rv()
+    labels <- with_event_games(game_labels_rv(), event_game_labels_rv())
     ids <- unname(choice_vec)
     new_names <- unname(labels[ids])
     missing <- is.na(new_names)
@@ -2821,12 +2821,46 @@ server <- function(input, output, session) {
   # choicesOpt$content so the badge color shows wherever the picker is built.
   game_content_rv <- reactiveVal(setNames(character(0), character(0)))
 
+  # The same three maps for games that reach the user only through an event
+  # (e.g. the owner's games in an event shared with them), which
+  # /game/usergames does not return. Filled by the events observer; the readers
+  # fall back to them for ids missing from the user's own list.
+  event_game_is_ve_rv <- reactiveVal(setNames(logical(0), character(0)))
+  event_game_labels_rv <- reactiveVal(setNames(character(0), character(0)))
+  event_game_content_rv <- reactiveVal(setNames(character(0), character(0)))
+
+  # Own-list entries win; event entries only fill the gaps.
+  with_event_games <- function(own, extra) {
+    c(own, extra[setdiff(names(extra), names(own))])
+  }
+
+  # id -> VE flag, "[VE]"/"[RW]"-prefixed label and badge HTML for a set of
+  # games. isVRWorld == TRUE -> virtual environment (VE); anything else
+  # (FALSE / missing) -> real world (RW).
+  game_env_maps <- function(ids, names, is_vr_world) {
+    is_ve <- if (is.null(is_vr_world)) {
+      rep(FALSE, length(ids))
+    } else {
+      !is.na(is_vr_world) & as.logical(is_vr_world)
+    }
+    badges <- ifelse(
+      is_ve,
+      "<span class='geo-badge geo-badge-ve'>VE</span>",
+      "<span class='geo-badge geo-badge-rw'>RW</span>"
+    )
+    list(
+      is_ve = setNames(is_ve, ids),
+      labels = setNames(paste0("[", ifelse(is_ve, "VE", "RW"), "] ", names), ids),
+      contents = setNames(paste0(badges, htmltools::htmlEscape(names)), ids)
+    )
+  }
+
   # Build the choicesOpt$content vector aligned to a picker choice vector
   # (values = game ids). Falls back to the (escaped, already [RW]/[VE]-prefixed)
   # option label when a game id has no known badge.
   game_contents <- function(choice_vec) {
     if (is.null(choice_vec) || length(choice_vec) == 0) return(NULL)
-    contents <- game_content_rv()
+    contents <- with_event_games(game_content_rv(), event_game_content_rv())
     ids <- unname(choice_vec)
     out <- unname(contents[ids])
     missing <- is.na(out)
@@ -3243,32 +3277,15 @@ server <- function(input, output, session) {
         games_choices_rv(mapping)
 
         # Prefix each picker label with a plain-text [RW] / [VE] marker so the
-        # environment is visible in the dropdown. isVRWorld == TRUE -> virtual
-        # environment (VE); anything else (FALSE / missing) -> real world (RW).
-        is_ve <- if ("isVRWorld" %in% names(games_df)) {
-          !is.na(games_df$isVRWorld) & as.logical(games_df$isVRWorld)
-        } else {
-          rep(FALSE, nrow(games_df))
-        }
-        
-        game_is_ve_rv(setNames(is_ve, games_df[["_id"]]))
-        
-        picker_labels <- paste0("[", ifelse(is_ve, "VE", "RW"), "] ", games_df$name)
+        # environment is visible in the dropdown, and keep the colored badge
+        # HTML (name escaped) for the picker's option content.
+        maps <- game_env_maps(games_df[["_id"]], games_df$name, games_df$isVRWorld)
+        game_is_ve_rv(maps$is_ve)
         # id -> labeled name, used to relabel the picker wherever it is rebuilt
         # (e.g. when the event filter restores or narrows the games list).
-        game_labels_rv(setNames(picker_labels, games_df[["_id"]]))
-        picker_choices <- setNames(games_df[["_id"]], picker_labels)
-
-        # id -> HTML content with the colored RW/VE badge (name is escaped).
-        game_badges <- ifelse(
-          is_ve,
-          "<span class='geo-badge geo-badge-ve'>VE</span>",
-          "<span class='geo-badge geo-badge-rw'>RW</span>"
-        )
-        game_content_rv(setNames(
-          paste0(game_badges, htmltools::htmlEscape(games_df$name)),
-          games_df[["_id"]]
-        ))
+        game_labels_rv(maps$labels)
+        picker_choices <- setNames(games_df[["_id"]], unname(maps$labels))
+        game_content_rv(maps$contents)
 
         # Preserve current selection if still valid, else default to newest
         cur <- isolate(input$selected_games)
@@ -3307,6 +3324,9 @@ server <- function(input, output, session) {
       # No events: disable the picker and show a clear empty message.
       events_choices_rv(setNames(character(0), character(0)))
       event_games_rv(list())
+      event_game_is_ve_rv(setNames(logical(0), character(0)))
+      event_game_labels_rv(setNames(character(0), character(0)))
+      event_game_content_rv(setNames(character(0), character(0)))
       # No events: the picker holds only a single "No events" option, so there
       # is nothing to filter by (effectively a disabled state without needing a
       # client-side JS dependency).
@@ -3323,16 +3343,30 @@ server <- function(input, output, session) {
     # Build the event-id -> games mapping. `games` is a list-column where each
     # element is that event's populated games (a data.frame with _id + name).
     gmap <- list()
+    # Every event game's id, name and environment, for the RW/VE badges of
+    # games that are not in the user's own list.
+    ev_ids <- character(0)
+    ev_names <- character(0)
+    ev_vr <- logical(0)
     for (i in seq_len(NROW(events_df))) {
       ev_id <- events_df[["_id"]][i]
       g <- events_data$games[[i]]
       if (!is.null(g) && NROW(g) > 0) {
         gdf <- as.data.frame(g, stringsAsFactors = FALSE)
         gmap[[ev_id]] <- setNames(gdf[["_id"]], gdf[["name"]])
+        ev_ids <- c(ev_ids, gdf[["_id"]])
+        ev_names <- c(ev_names, gdf[["name"]])
+        ev_vr <- c(ev_vr, if ("isVRWorld" %in% names(gdf)) as.logical(gdf$isVRWorld)
+                          else rep(NA, NROW(gdf)))
       } else {
         gmap[[ev_id]] <- setNames(character(0), character(0))
       }
     }
+    keep <- !duplicated(ev_ids)
+    ev_maps <- game_env_maps(ev_ids[keep], ev_names[keep], ev_vr[keep])
+    event_game_is_ve_rv(ev_maps$is_ve)
+    event_game_labels_rv(ev_maps$labels)
+    event_game_content_rv(ev_maps$contents)
     event_games_rv(gmap)
 
     # Picker choices: "Not selected" first, then each event by name.

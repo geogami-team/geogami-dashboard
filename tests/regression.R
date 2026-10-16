@@ -215,7 +215,41 @@ check("API mutations keep JSON, authentication, and a bounded timeout", function
   stopifnot(result$status == 200L, length(result$data$sharedWith) == 0L)
 })
 
-sharing_expression <- Filter(function(e) is_assignment(e, "observe_share_removals"), server_body)[[1]]
+check("Event games missing from the viewer's own game list keep their RW/VE badge", function() {
+  # A co-editor of a shared event: only "own" is in their /game/usergames list;
+  # the owner's games reach them through the event alone.
+  own <- "507f1f77bcf86cd799439011"
+  owner_ve <- "6a00000000000000000000a1"
+  owner_rw <- "6a00000000000000000000a2"
+  event_id <- "6a00000000000000000000e1"
+  events <- jsonlite::fromJSON(jsonlite::toJSON(list(list(
+    `_id` = event_id, name = "Shared study", isOwner = FALSE,
+    games = list(list(`_id` = own, name = "Own game", isVRWorld = FALSE),
+                 list(`_id` = owner_ve, name = "Owner VE game", isVRWorld = TRUE),
+                 list(`_id` = owner_rw, name = "Owner RW game"))
+  )), auto_unbox = TRUE))
+  env <- new.env(parent = app)
+  env$fetch_games_data_from_server <- function(url, token, ...) {
+    if (grepl("/game/usergames$", url)) {
+      return(data.frame(`_id` = own, name = "Own game", isVRWorld = FALSE, check.names = FALSE))
+    }
+    if (grepl("/event/userevents$", url)) return(events)
+    if (grepl("/track/gametracks/", url)) return(NULL)
+    stop("Unexpected API request in test")
+  }
+  eval(server_expression, env)
+  shiny::testServer(env$server, {
+    session$setInputs(theme = "Light", num_value = 1L)
+    accessToken_rv("dummy")
+    session$setInputs(selected_event = event_id, selected_games = owner_ve)
+    contents <- game_contents(event_games_rv()[[event_id]])
+    stopifnot(!session$isClosed(), length(contents) == 3L,
+              grepl("geo-badge-rw", contents[1]), grepl("geo-badge-ve", contents[2]),
+              grepl("geo-badge-rw", contents[3]), isTRUE(selected_game_is_virtual()))
+  })
+})
+
+sharing_expression <-Filter(function(e) is_assignment(e, "observe_share_removals"), server_body)[[1]]
 for (kind in c("game", "event", "track")) local({
   prefix <- switch(kind, game = "remove_share_", event = "remove_event_share_", track = "remove_track_share_")
   requests <- list()
